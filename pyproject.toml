@@ -1,0 +1,38 @@
+[project]
+name = "hatTrick"
+version = "0.1.0"
+description = "Hadamard Transform for Time-Resolved Crystallography"
+readme = "README.md"
+requires-python = ">= 3.8"
+authors = [{name= "Ryan O'Dea", email = "ryan.odea@psi.ch"}]
+keywords = ["crystallography", "SFTRC"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+    "click>=8.0.0",
+]
+
+[project.scripts]
+hatrx = "hatTrick.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hatTrick*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
