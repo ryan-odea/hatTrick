@@ -3,8 +3,10 @@ from typing import List, Optional, Tuple
 
 import h5py
 import numpy as np
+
 try:
     from bitshuffle.h5 import H5_COMPRESS_LZ4, H5FILTER
+
     HAS_BITSHUFFLE = True
 except ImportError:
     HAS_BITSHUFFLE = False
@@ -61,13 +63,9 @@ def _validate(
         raise ValueError("n_merged_frames must be a positive integer.")
 
     if not isprime(n_merged_frames):
-        raise ValueError(
-            f"n_merged_frames={n_merged_frames} must be prime for Hadamard encoding"
-        )
+        raise ValueError(f"n_merged_frames={n_merged_frames} must be prime for Hadamard encoding")
     if n_merged_frames % 4 != 3:
-        raise ValueError(
-            f"n_merged_frames={n_merged_frames} must satisfy n ≡ 3 (mod 4)"
-        )
+        raise ValueError(f"n_merged_frames={n_merged_frames} must satisfy n ≡ 3 (mod 4)")
 
     if skip_frames is not None:
         if not isinstance(skip_frames, list):
@@ -167,6 +165,19 @@ def _rolling_merge_sq(
         merged_data[i] = frame_merged
 
     return merged_data
+
+
+def _rolling_merge_mp(args: Tuple) -> Tuple[int, np.ndarray]:
+    start_idx, data_subset, n_merged_frames, dtype = args
+    frame_shape = data_subset.shape[1:]
+    merged = np.zeros(frame_shape, dtype=dtype)
+
+    for i in range(n_merged_frames):
+        merged += data_subset[i]
+
+    merged = merged / n_merged_frames
+
+    return start_idx, merged
 
 
 def _write_output(

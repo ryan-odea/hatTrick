@@ -1,20 +1,12 @@
-import os
 from multiprocessing import Pool, cpu_count
 from typing import List, Literal, Optional
 
-import h5py
 import numpy as np
 
-from ._helpers import (
-    _create_merge_indices,
-    _hadamard_encode_chunk_mp,
-    _hadamard_encode_chunk_sq,
-    _open_file,
-    _rolling_merge_sq,
-    _validate,
-    _write_output,
-    generate_s_matrix,
-)
+from ._helpers import (_create_merge_indices, _hadamard_encode_chunk_mp,
+                       _hadamard_encode_chunk_sq, _open_file,
+                       _rolling_merge_mp, _rolling_merge_sq, _validate,
+                       _write_output, generate_s_matrix)
 
 
 class Merger:
@@ -91,9 +83,7 @@ class Merger:
                 self.data_file.close()
 
     def _open_and_load(self) -> None:
-        self.data_file, self.data = _open_file(
-            self.file_name, self.data_location, self.data_name
-        )
+        self.data_file, self.data = _open_file(self.file_name, self.data_location, self.data_name)
         self.n_total_frames = len(self.data)
         self.frame_shape = self.data.shape[1:]
         self.dtype = self.data.dtype
@@ -134,9 +124,7 @@ class Merger:
         chunks = []
         for start_idx in _create_merge_indices(self.n_frames, self.n_merged_frames):
             subset = self.data_array[start_idx : start_idx + self.n_merged_frames]
-            chunks.append(
-                (start_idx, subset, self.n_merged_frames, self.skip_pattern, self.dtype)
-            )
+            chunks.append((start_idx, subset, self.n_merged_frames, self.skip_pattern, self.dtype))
 
         with Pool(self.n_workers) as pool:
             results = pool.map(_rolling_merge_mp, chunks)

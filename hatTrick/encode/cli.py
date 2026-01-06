@@ -1,4 +1,5 @@
 import click
+
 from .merger import Merger
 
 

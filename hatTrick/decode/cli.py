@@ -1,7 +1,9 @@
-import click
 import glob
-from .HATRX import decode_hadamard_files
+
+import click
+
 from ._helpers import generate_s_matrix
+from .HATRX import decode_hadamard_files
 
 
 @click.command()

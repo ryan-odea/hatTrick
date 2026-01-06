@@ -1,9 +1,9 @@
+from pathlib import Path
+from typing import List, Optional
+
 import numpy as np
 import pandas as pd
 from scipy.linalg import block_diag
-from io import StringIO
-from typing import List, Optional
-from pathlib import Path
 
 from ._helpers import compute_hadamard_inverse, generate_s_matrix
 
@@ -65,11 +65,11 @@ def decode_hadamard_files(
 
         if n_cols == 7:
             file_format = "crystfel"
-            print(f"Detected CrystFEL format: h k l I phase sigma(I) nmeas")
+            print("Detected CrystFEL format: h k l I phase sigma(I) nmeas")
             print(f"Skipping {skip_rows} header lines")
         elif n_cols == 5:
             file_format = "crystfel_simple"
-            print(f"Detected format: h k l I sigma(I)")
+            print("Detected format: h k l I sigma(I)")
             print(f"Skipping {skip_rows} header lines")
         else:
             file_format = "ccp4"
@@ -78,13 +78,10 @@ def decode_hadamard_files(
         print()
 
     if file_format == "crystfel":
-        data_columns = ["I", "SIGMA"]
         n_data_blocks = 2
     elif file_format == "crystfel_simple":
-        data_columns = ["I", "SIGMA"]
         n_data_blocks = 2
     else:
-        data_columns = ["I", "sigI", "F", "sigF"]
         n_data_blocks = 4
 
     cooler_Sinv = block_diag(*([Sinv] * n_data_blocks))
@@ -154,7 +151,7 @@ def decode_hadamard_files(
         combined = combined.dropna()
 
         if len(combined) == 0:
-            print(f"  WARNING: No valid reflections after conversion!")
+            print("  WARNING: No valid reflections after conversion!")
             continue
 
         reordered_cols = ["h", "k", "l"]
