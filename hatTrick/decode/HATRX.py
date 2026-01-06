@@ -5,7 +5,7 @@ from io import StringIO
 from typing import List, Optional
 from pathlib import Path
 
-from .helpers import compute_hadamard_inverse, generate_s_matrix
+from ._helpers import compute_hadamard_inverse, generate_s_matrix
 
 
 def decode_hadamard_files(
