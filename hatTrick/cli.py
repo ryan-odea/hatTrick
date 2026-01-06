@@ -1,6 +1,7 @@
 import click
-from .encode.cli import encode
+
 from .decode.cli import decode, show_encoding
+from .encode.cli import encode
 
 
 @click.group()
