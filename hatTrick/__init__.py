@@ -1,6 +1,4 @@
-from .helpers import generate_s_matrix, compute_hadamard_inverse
-from .HATRX import decode_hadamard_files
+from .encode import Merger
+from .decode import generate_s_matrix, compute_hadamard_inverse, decode_hadamard_files
 
-__version__ = "0.1.0"
-
-_all__ = ["generate_s_matrix", "decode_hadamard_files", "compute_hadamard_inverse"]
+__all__ = ['Merger', 'generate_s_matrix', 'compute_hadamard_inverse', 'decode_hadamard_files']
