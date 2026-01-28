@@ -1,4 +1,5 @@
 import click
+from pathlib import Path
 
 from .merger import Merger
 
@@ -53,7 +54,7 @@ def encode(
 
     merger = Merger(
         file_name=file_name,
-        output_file=output_file,
+        output_file=Path(output_file).name,
         n_frames=n_frames,
         n_merged_frames=n_merged_frames,
         skip_pattern=parsed_skip_pattern,
