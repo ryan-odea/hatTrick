@@ -57,6 +57,23 @@ def _make_input_files(
     return paths
 
 
+def _find_pattern_files(output_dir: str, dominant_stem: str, n: int) -> List[str]:
+    """Return the per-pattern output files in pattern order."""
+    S = generate_s_matrix(n)
+    out = Path(output_dir)
+    paths = []
+    for row in S:
+        tag = "".join(str(int(x)) for x in row)
+        paths.append(str(out / f"{dominant_stem}_{tag}.h5"))
+    return paths
+
+
+def _count_bunches_for_stem(output_dir: str, stem: str, n: int) -> int:
+    """Return the number of bunches in the first pattern file for a given stem."""
+    pfiles = _find_pattern_files(output_dir, stem, n)
+    return _read_h5(pfiles[0]).shape[0]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -71,7 +88,7 @@ class TestSingleFileMode:
         # Create two files, each with exactly 6 frames (2 complete blocks)
         paths = _make_input_files(tmp_path, [6, 6])
 
-        output_base = str(tmp_path / "encoded.h5")
+        out_dir = str(tmp_path / "out")
 
         # Run single-file encode
         single_file_hadamard_encode(
@@ -79,17 +96,17 @@ class TestSingleFileMode:
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=output_base,
+            output_dir=out_dir,
             start_index=0,
         )
 
         # Should have created 4 blocks total (2 per file, no cross-boundary)
-        S = generate_s_matrix(n)
-        pattern_file = str(tmp_path / f"encoded_{''.join(str(int(x)) for x in S[0])}.h5")
-
-        encoded = _read_h5(pattern_file)
-        # 4 blocks total (2 from each file)
-        assert encoded.shape[0] == 4
+        # Each file is its own dominant stem
+        total_bunches = (
+            _count_bunches_for_stem(out_dir, "input_000", n)
+            + _count_bunches_for_stem(out_dir, "input_001", n)
+        )
+        assert total_bunches == 4
 
     def test_single_file_discards_trailing_frames(self, tmp_path):
         """Verify incomplete blocks at end of each file are discarded."""
@@ -98,71 +115,73 @@ class TestSingleFileMode:
         # second has 4 frames (1 complete + 1 trailing)
         paths = _make_input_files(tmp_path, [5, 4])
 
-        output_base = str(tmp_path / "encoded.h5")
+        out_dir = str(tmp_path / "out")
 
         single_file_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=output_base,
+            output_dir=out_dir,
             start_index=0,
         )
 
         # Should have 2 blocks total (1 from each file)
-        S = generate_s_matrix(n)
-        pattern_file = str(tmp_path / f"encoded_{''.join(str(int(x)) for x in S[0])}.h5")
-
-        encoded = _read_h5(pattern_file)
-        assert encoded.shape[0] == 2
+        total_bunches = (
+            _count_bunches_for_stem(out_dir, "input_000", n)
+            + _count_bunches_for_stem(out_dir, "input_001", n)
+        )
+        assert total_bunches == 2
 
     def test_continuous_vs_single_file_difference(self, tmp_path):
         """Verify continuous and single-file modes produce different results."""
         n = 3
         # Create two files with 4 frames each
-        # Continuous: can make 2 complete blocks (0-2, 3-5), spanning boundary
-        # Single-file: 1 block per file (0-2 from file1, 0-2 from file2), no boundary cross
         paths = _make_input_files(tmp_path, [4, 4])
 
         # Single-file mode
-        single_output = str(tmp_path / "single.h5")
+        single_dir = str(tmp_path / "single")
         single_file_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=single_output,
+            output_dir=single_dir,
             start_index=0,
         )
 
         # Continuous mode
-        continuous_output = str(tmp_path / "continuous.h5")
+        cont_dir = str(tmp_path / "continuous")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=continuous_output,
+            output_dir=cont_dir,
             start_index=0,
         )
 
         S = generate_s_matrix(n)
-        pattern_tag = "".join(str(int(x)) for x in S[0])
+        first_tag = "".join(str(int(x)) for x in S[0])
 
-        single_encoded = _read_h5(str(tmp_path / f"single_{pattern_tag}.h5"))
-        continuous_encoded = _read_h5(str(tmp_path / f"continuous_{pattern_tag}.h5"))
+        # Single: each file produces its own dominant stem
+        single_f0 = _read_h5(str(Path(single_dir) / f"input_000_{first_tag}.h5"))
+        single_f1 = _read_h5(str(Path(single_dir) / f"input_001_{first_tag}.h5"))
 
-        # Both should have 2 blocks
-        assert single_encoded.shape[0] == 2
-        assert continuous_encoded.shape[0] == 2
+        # Continuous: first block dominant is input_000, second is input_001
+        cont_f0 = _read_h5(str(Path(cont_dir) / f"input_000_{first_tag}.h5"))
 
-        # The first block should be the same (both use frames 0-2 from first file)
-        assert np.allclose(single_encoded[0], continuous_encoded[0])
+        # Both single-file first block and continuous first block should be the same
+        # (both use frames 0-2 from first file)
+        assert single_f0.shape[0] == 1
+        assert cont_f0.shape[0] == 1
+        assert np.allclose(single_f0[0], cont_f0[0])
 
-        # The second block should be DIFFERENT:
-        # - single-file: frames 0-2 from second file
-        # - continuous: frames 3 from first file + 0-1 from second file
-        assert not np.allclose(single_encoded[1], continuous_encoded[1])
+        # Second block should be different:
+        # - single-file: frames 0-2 from second file (input_001)
+        # - continuous: frame 3 from first file + 0-1 from second file (dominant input_001)
+        cont_f1 = _read_h5(str(Path(cont_dir) / f"input_001_{first_tag}.h5"))
+        assert not np.allclose(single_f1[0], cont_f1[0])
 
     def test_start_index_only_affects_first_file(self, tmp_path):
         """Verify start_index only applies to the first file in single-file mode."""
@@ -170,7 +189,7 @@ class TestSingleFileMode:
         # Create two files with 6 frames each
         paths = _make_input_files(tmp_path, [6, 6])
 
-        output_base = str(tmp_path / "encoded.h5")
+        out_dir = str(tmp_path / "out")
 
         # Start at frame 3 (should skip first block of first file)
         single_file_hadamard_encode(
@@ -178,13 +197,13 @@ class TestSingleFileMode:
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=output_base,
+            output_dir=out_dir,
             start_index=3,
         )
 
-        S = generate_s_matrix(n)
-        pattern_file = str(tmp_path / f"encoded_{''.join(str(int(x)) for x in S[0])}.h5")
-
-        encoded = _read_h5(pattern_file)
         # Should have 3 blocks: 1 from first file (skipped first block) + 2 from second file
-        assert encoded.shape[0] == 3
+        total_bunches = (
+            _count_bunches_for_stem(out_dir, "input_000", n)
+            + _count_bunches_for_stem(out_dir, "input_001", n)
+        )
+        assert total_bunches == 3

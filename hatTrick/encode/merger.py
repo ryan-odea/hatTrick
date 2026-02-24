@@ -17,8 +17,11 @@ class Merger:
     extends past the end of one file, the remaining frames are drawn from the next
     file. In non-continuous mode (default), each file is processed independently.
 
+    Output files are named after the dominant input file stem with the binary
+    S-matrix row appended (e.g. ``input_000_110.h5`` for n=3).
+
     :param file_name: Path to a single HDF5 file, a glob pattern (e.g. ``"data/run_*.h5"``), or a plain-text list file containing one HDF5 path per line; see :func:`resolve_file_list` for resolution rules
-    :param output_file: Base path for output HDF5 files; one file per encoding pattern is written, named with the binary S-matrix row (e.g. ``merged_110.h5`` for n=3)
+    :param output_dir: Directory for output HDF5 files
     :param n_merged_frames: S-matrix order; must be a prime satisfying n % 4 == 3
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
@@ -29,7 +32,7 @@ class Merger:
     def __init__(
         self,
         file_name: str,
-        output_file: str = "merged.h5",
+        output_dir: str = ".",
         n_merged_frames: int = 3,
         data_location: str = "entry/data",
         data_name: str = "data",
@@ -37,7 +40,7 @@ class Merger:
         continuous: bool = False,
     ):
         self.file_name = file_name
-        self.output_file = output_file
+        self.output_dir = output_dir
         self.n_merged_frames = n_merged_frames
         self.data_location = data_location
         self.data_name = data_name
@@ -49,7 +52,6 @@ class Merger:
         _validate_hadamard(self.n_merged_frames)
 
         file_paths = resolve_file_list(self.file_name)
-        print(f"Resolved {len(file_paths)} input file(s).")
 
         if self.continuous:
             continuous_hadamard_encode(
@@ -57,7 +59,7 @@ class Merger:
                 n_merged_frames=self.n_merged_frames,
                 data_location=self.data_location,
                 data_name=self.data_name,
-                output_file=self.output_file,
+                output_dir=self.output_dir,
                 start_index=self.start,
             )
         else:
@@ -66,6 +68,6 @@ class Merger:
                 n_merged_frames=self.n_merged_frames,
                 data_location=self.data_location,
                 data_name=self.data_name,
-                output_file=self.output_file,
+                output_dir=self.output_dir,
                 start_index=self.start,
             )

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import click
 
 from .merger import Merger
@@ -16,7 +14,12 @@ from .merger import Merger
         "span file boundaries."
     ),
 )
-@click.option("-o", "--output-file", default="merged.h5", help="Base path for output HDF5 files")
+@click.option(
+    "-o",
+    "--output-dir",
+    default=".",
+    help="Output directory for encoded HDF5 files",
+)
 @click.option(
     "--n-merged-frames",
     type=int,
@@ -49,7 +52,7 @@ from .merger import Merger
 )
 def encode(
     file_name: str,
-    output_file: str,
+    output_dir: str,
     n_merged_frames: int,
     data_location: str,
     data_name: str,
@@ -58,13 +61,13 @@ def encode(
 ) -> None:
     """Hadamard-encode HDF5 frames across one or more input files.
 
-    One output file per encoding pattern is written, named with the binary
-    S-matrix row (e.g. merged_110.h5 for n=3).  By default, each file is
-    encoded independently. Use --continuous to allow blocks to span file
-    boundaries.
+    Output files are named after the dominant input file with the binary
+    S-matrix row appended (e.g. input_000_110.h5 for n=3).  By default,
+    each file is encoded independently. Use --continuous to allow blocks
+    to span file boundaries.
 
     :param file_name: Input HDF5 file, glob pattern, or path to plain-text list file
-    :param output_file: Base path for output HDF5 files
+    :param output_dir: Output directory for encoded HDF5 files
     :param n_merged_frames: S-matrix order (must be prime and satisfy n == 3 mod 4)
     :param data_location: HDF5 group path (e.g., "entry/data")
     :param data_name: Dataset name within the HDF5 group
@@ -77,21 +80,21 @@ def encode(
     Single file:
 
     \b
-        hatrx encode -f run.h5 -o encoded.h5 --n-merged-frames 7
+        hatrx encode -f run.h5 -o encoded/ --n-merged-frames 7
 
     Many files via glob (no shell ARG_MAX limit):
 
     \b
-        hatrx encode -f "data/run_*.h5" -o merged.h5 --n-merged-frames 3
+        hatrx encode -f "data/run_*.h5" -o merged/ --n-merged-frames 3
 
     Many files via list file, starting at frame 100:
 
     \b
-        hatrx encode -f files.txt -o merged.h5 --n-merged-frames 3 --start 100
+        hatrx encode -f files.txt -o merged/ --n-merged-frames 3 --start 100
     """
     merger = Merger(
         file_name=file_name,
-        output_file=Path(output_file).name,
+        output_dir=output_dir,
         n_merged_frames=n_merged_frames,
         data_location=data_location,
         data_name=data_name,

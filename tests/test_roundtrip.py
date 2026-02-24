@@ -97,18 +97,17 @@ def _decode_pattern_files(
     return recovered.reshape(n_bunches * n, H, W)
 
 
-def _find_pattern_files(output_base: str, n: int) -> List[str]:
+def _find_pattern_files(output_dir: str, dominant_stem: str, n: int) -> List[str]:
     """Return the per-pattern output files in pattern order.
 
-    ``_write_output`` names files with the binary S-matrix row, so we read the
-    S-matrix and reconstruct the expected filenames.
+    Files are named ``{dominant_stem}_{binary_tag}.h5`` inside *output_dir*.
     """
     S = generate_s_matrix(n)
-    base = output_base.rsplit(".h5", 1)[0]
+    out = Path(output_dir)
     paths = []
     for row in S:
         tag = "".join(str(int(x)) for x in row)
-        paths.append(f"{base}_{tag}.h5")
+        paths.append(str(out / f"{dominant_stem}_{tag}.h5"))
     return paths
 
 
@@ -129,16 +128,18 @@ class TestContinuousHadamardRoundTrip:
         in_dir.mkdir()
         paths, gt = _make_input_files(in_dir, [total], seed=0)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        recovered = _decode_pattern_files(
+            _find_pattern_files(out_dir, "input_000", n), n
+        )
 
         np.testing.assert_allclose(
             recovered,
@@ -157,16 +158,24 @@ class TestContinuousHadamardRoundTrip:
         # n frames per file -> one block per file, n files
         paths, gt = _make_input_files(in_dir, [n] * n_bunches, seed=1)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        # Each file is its own dominant, so we need to collect across all stems
+        # and decode per-stem, then concatenate.
+        all_recovered = []
+        for i in range(n_bunches):
+            stem = f"input_{i:03d}"
+            pfiles = _find_pattern_files(out_dir, stem, n)
+            rec = _decode_pattern_files(pfiles, n)
+            all_recovered.append(rec)
+        recovered = np.concatenate(all_recovered, axis=0)
 
         np.testing.assert_allclose(
             recovered,
@@ -189,16 +198,17 @@ class TestContinuousHadamardRoundTrip:
         sizes = [max(1, s) for s in sizes]
         paths, gt = _make_input_files(in_dir, sizes, seed=2)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        # Find all pattern files in the output directory and group by dominant stem
+        recovered = _collect_and_decode(out_dir, n)
         n_recovered = recovered.shape[0]
 
         np.testing.assert_allclose(
@@ -218,16 +228,16 @@ class TestContinuousHadamardRoundTrip:
         in_dir.mkdir()
         paths, gt = _make_input_files(in_dir, [1] * total, seed=3)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        recovered = _collect_and_decode(out_dir, n)
 
         np.testing.assert_allclose(
             recovered,
@@ -247,17 +257,19 @@ class TestContinuousHadamardRoundTrip:
         in_dir.mkdir()
         paths, gt = _make_input_files(in_dir, [total], seed=4)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
             start_index=skip,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        recovered = _decode_pattern_files(
+            _find_pattern_files(out_dir, "input_000", n), n
+        )
 
         # Ground truth begins at frame `skip`.
         np.testing.assert_allclose(
@@ -278,17 +290,19 @@ class TestContinuousHadamardRoundTrip:
         in_dir.mkdir()
         paths, gt = _make_input_files(in_dir, [first_file_frames, second_file_frames], seed=5)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
             start_index=first_file_frames,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        recovered = _decode_pattern_files(
+            _find_pattern_files(out_dir, "input_001", n), n
+        )
 
         np.testing.assert_allclose(
             recovered,
@@ -298,27 +312,27 @@ class TestContinuousHadamardRoundTrip:
             err_msg=f"Cross-file start_index round-trip failed for n={n}",
         )
 
-    def test_output_files_named_by_s_matrix_row(self, tmp_path):
-        """Output filenames contain the binary S-matrix row for each pattern."""
+    def test_output_files_named_by_dominant_stem(self, tmp_path):
+        """Output filenames contain the dominant input stem and binary S-matrix row."""
         n = 3
         in_dir = tmp_path / "in"
         in_dir.mkdir()
         paths, _ = _make_input_files(in_dir, [n * 2], seed=6)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
         S = generate_s_matrix(n)
-        base = out.rsplit(".h5", 1)[0]
+        out = Path(out_dir)
         for row in S:
             tag = "".join(str(int(x)) for x in row)
-            expected = Path(f"{base}_{tag}.h5")
+            expected = out / f"input_000_{tag}.h5"
             assert expected.is_file(), f"Expected output file missing: {expected}"
 
     def test_encoded_shape(self, tmp_path):
@@ -329,16 +343,16 @@ class TestContinuousHadamardRoundTrip:
         in_dir.mkdir()
         paths, _ = _make_input_files(in_dir, [n * n_bunches], seed=7)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        for p in _find_pattern_files(out, n):
+        for p in _find_pattern_files(out_dir, "input_000", n):
             data = _read_h5(p)
             assert data.shape == (
                 n_bunches,
@@ -354,16 +368,16 @@ class TestContinuousHadamardRoundTrip:
         in_dir.mkdir()
         paths, _ = _make_input_files(in_dir, [n * n_bunches + leftover], seed=8)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        for p in _find_pattern_files(out, n):
+        for p in _find_pattern_files(out_dir, "input_000", n):
             data = _read_h5(p)
             assert (
                 data.shape[0] == n_bunches
@@ -381,16 +395,18 @@ class TestContinuousHadamardRoundTrip:
         glob_pattern = str(in_dir / "input_*.h5")
         resolved = resolve_file_list(glob_pattern)
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=resolved,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        recovered = _decode_pattern_files(
+            _find_pattern_files(out_dir, "input_000", n), n
+        )
         np.testing.assert_allclose(recovered, gt, rtol=1e-4, atol=1e-3)
 
     def test_resolve_file_list_manifest(self, tmp_path):
@@ -406,14 +422,60 @@ class TestContinuousHadamardRoundTrip:
 
         resolved = resolve_file_list(str(manifest))
 
-        out = str(tmp_path / "enc.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=resolved,
             n_merged_frames=n,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
 
-        recovered = _decode_pattern_files(_find_pattern_files(out, n), n)
+        # Each file is its own dominant stem
+        all_recovered = []
+        for i in range(n_bunches):
+            stem = f"input_{i:03d}"
+            pfiles = _find_pattern_files(out_dir, stem, n)
+            rec = _decode_pattern_files(pfiles, n)
+            all_recovered.append(rec)
+        recovered = np.concatenate(all_recovered, axis=0)
         np.testing.assert_allclose(recovered, gt, rtol=1e-4, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Helper to collect all dominant-stem groups and decode in order
+# ---------------------------------------------------------------------------
+
+
+def _collect_and_decode(output_dir: str, n: int) -> np.ndarray:
+    """Find all output groups in *output_dir*, decode each, and concatenate.
+
+    Groups are identified by finding all files matching ``*_{tag}.h5`` for the
+    first S-matrix row tag, then extracting the dominant stem prefix.  Groups
+    are decoded in natsorted order by stem.
+    """
+    from natsort import natsorted
+
+    S = generate_s_matrix(n)
+    first_tag = "".join(str(int(x)) for x in S[0])
+    suffix = f"_{first_tag}.h5"
+
+    out = Path(output_dir)
+    # Find all files for the first pattern
+    first_pattern_files = sorted(out.glob(f"*{suffix}"))
+
+    stems = []
+    for fp in first_pattern_files:
+        # Strip the _{tag}.h5 suffix to get the dominant stem
+        stem = fp.name[: -len(suffix)]
+        stems.append(stem)
+
+    stems = natsorted(stems)
+
+    all_recovered = []
+    for stem in stems:
+        pfiles = _find_pattern_files(output_dir, stem, n)
+        rec = _decode_pattern_files(pfiles, n)
+        all_recovered.append(rec)
+
+    return np.concatenate(all_recovered, axis=0)

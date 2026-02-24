@@ -1,9 +1,12 @@
 import glob as _glob
 import os
-from typing import Iterator, List, Optional, Tuple
+from collections import Counter
+from pathlib import Path
+from typing import Dict, Iterator, List, Tuple
 
 import h5py
 import numpy as np
+from natsort import natsorted
 
 try:
     from bitshuffle.h5 import H5_COMPRESS_LZ4, H5FILTER
@@ -149,7 +152,7 @@ def resolve_file_list(source: str) -> List[str]:
             raise ValueError(f"List file '{source}' contains no file paths.")
         return paths
 
-    paths = sorted(_glob.glob(source))
+    paths = natsorted(_glob.glob(source))
     if not paths:
         raise ValueError(f"No files matched glob pattern '{source}'.")
     return paths
@@ -189,7 +192,7 @@ def _frame_iterator(
     data_location: str,
     data_name: str,
     start_index: int = 0,
-) -> Iterator[Tuple[np.ndarray, "np.dtype"]]:
+) -> Iterator[Tuple[np.ndarray, "np.dtype", str]]:
     """Yield individual frames across an ordered sequence of HDF5 files.
 
     At most one HDF5 file is open at a time. Combined with the block-at-a-time
@@ -200,7 +203,7 @@ def _frame_iterator(
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
     :param start_index: Global frame index at which to begin yielding (0-based, counting from the very first frame of *file_paths[0]*)
-    :yields: Tuple of ``(frame_array, dtype)`` for each frame at or after *start_index*
+    :yields: Tuple of ``(frame_array, dtype, file_path)`` for each frame at or after *start_index*
     """
     global_idx = 0
     for file_path in file_paths:
@@ -209,78 +212,129 @@ def _frame_iterator(
             n = len(dset)
             for local_idx in range(n):
                 if global_idx >= start_index:
-                    yield dset[local_idx], dset.dtype
+                    yield dset[local_idx], dset.dtype, file_path
                 global_idx += 1
         finally:
             fh.close()
 
 
-def _write_output(
-    output_file: str,
-    data_location: str,
-    data_name: str,
-    encoded_data: np.ndarray,
-    dtype,
-    S_matrix: Optional[np.ndarray] = None,
-) -> None:
-    """Write Hadamard-encoded data to one HDF5 file per pattern.
+# ---------------------------------------------------------------------------
+# Incremental HDF5 writer
+# ---------------------------------------------------------------------------
 
-    *encoded_data* must be 4-D with shape ``(n_patterns, n_bunches, H, W)``.
-    One output file is written per pattern, named using the binary S-matrix
-    row when *S_matrix* is provided (e.g. ``merged_110.h5``), otherwise
-    ``merged_pattern0.h5``, ``merged_pattern1.h5``, etc.
 
-    :param output_file: Base output path; the .h5 suffix is stripped and replaced with the per-pattern tag
-    :param data_location: HDF5 group path (e.g., "entry/data")
-    :param data_name: Dataset name within the group
-    :param encoded_data: Array of shape (n_patterns, n_bunches, H, W)
-    :param dtype: HDF5 dataset dtype
-    :param S_matrix: S-matrix used for encoding; used to label output files and stored as an HDF5 attribute
-    :raises ValueError: If encoded_data is not 4-D
+def _dominant_stem(file_counts: Counter) -> str:
+    """Return the stem of the file that contributed the most frames to a block.
+
+    :param file_counts: Counter mapping file paths to frame counts
+    :returns: The stem (filename without extension) of the dominant file
     """
-    if encoded_data.ndim != 4:
-        raise ValueError(
-            f"encoded_data must be 4-D (n_patterns, n_bunches, H, W), "
-            f"got shape {encoded_data.shape}"
-        )
+    dominant_path = file_counts.most_common(1)[0][0]
+    return Path(dominant_path).stem
 
-    if HAS_BITSHUFFLE:
-        compress_kwargs = dict(
-            compression=H5FILTER,
-            compression_opts=(0, H5_COMPRESS_LZ4),
-        )
-    else:
-        compress_kwargs = {}
 
-    n_patterns = encoded_data.shape[0]
-    base_path = output_file.rsplit(".h5", 1)[0]
+class _IncrementalWriter:
+    """Manages per-pattern HDF5 output files and appends bunches incrementally.
 
-    for pattern_idx in range(n_patterns):
-        if S_matrix is not None:
-            binary_tag = "".join(str(int(x)) for x in S_matrix[pattern_idx])
-            pattern_file = f"{base_path}_{binary_tag}.h5"
-        else:
-            pattern_file = f"{base_path}_pattern{pattern_idx}.h5"
+    Output files are named ``{output_dir}/{dominant_stem}_{binary_tag}.h5``
+    where *binary_tag* is the S-matrix row for that pattern.  When the dominant
+    file changes, previously open files are closed and new ones are opened.
+    When the dominant file is the same as the previous bunch, data is appended
+    to the existing resizable datasets.
 
-        with h5py.File(pattern_file, "w") as f:
-            grp = f.create_group(data_location)
-            pattern_data = encoded_data[pattern_idx]  # (n_bunches, H, W)
-            dset = grp.create_dataset(
-                data_name,
-                pattern_data.shape,
-                chunks=(1, pattern_data.shape[1], pattern_data.shape[2]),
-                dtype=dtype,
-                **compress_kwargs,
+    :param output_dir: Directory in which to write output files
+    :param data_location: HDF5 group path (e.g. ``"entry/data"``)
+    :param data_name: Dataset name inside *data_location*
+    :param S_matrix: The S-matrix used for encoding
+    """
+
+    def __init__(
+        self,
+        output_dir: str,
+        data_location: str,
+        data_name: str,
+        S_matrix: np.ndarray,
+    ):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.data_location = data_location
+        self.data_name = data_name
+        self.S_matrix = S_matrix
+        self.n_patterns = S_matrix.shape[0]
+
+        self._binary_tags = []
+        for row in S_matrix:
+            self._binary_tags.append("".join(str(int(x)) for x in row))
+
+        # Map: dominant_stem -> list of n open h5py.File handles
+        self._open_files: Dict[str, List[h5py.File]] = {}
+        self._compress_kwargs = {}
+        if HAS_BITSHUFFLE:
+            self._compress_kwargs = dict(
+                compression=H5FILTER,
+                compression_opts=(0, H5_COMPRESS_LZ4),
             )
-            dset[:] = pattern_data
 
+    def append_bunch(
+        self,
+        encoded: np.ndarray,
+        dtype,
+        dominant_stem: str,
+    ) -> None:
+        """Append one encoded bunch (n_patterns, H, W) to the output files.
+
+        :param encoded: Array of shape ``(n_patterns, H, W)``
+        :param dtype: HDF5 dataset dtype
+        :param dominant_stem: Stem of the dominant input file for this bunch
+        """
+        if dominant_stem not in self._open_files:
+            self._open_files[dominant_stem] = self._open_pattern_files(
+                dominant_stem, encoded.shape[1:], dtype
+            )
+
+        handles = self._open_files[dominant_stem]
+        for pattern_idx in range(self.n_patterns):
+            fh = handles[pattern_idx]
+            dset = fh[f"{self.data_location}/{self.data_name}"]
+            cur_len = dset.shape[0]
+            dset.resize(cur_len + 1, axis=0)
+            dset[cur_len] = encoded[pattern_idx]
+
+    def _open_pattern_files(
+        self, dominant_stem: str, frame_shape: tuple, dtype
+    ) -> List[h5py.File]:
+        """Create and return n_patterns new HDF5 files for a dominant stem."""
+        handles = []
+        for pattern_idx in range(self.n_patterns):
+            tag = self._binary_tags[pattern_idx]
+            path = self.output_dir / f"{dominant_stem}_{tag}.h5"
+            fh = h5py.File(str(path), "w")
+            grp = fh.create_group(self.data_location)
+            dset = grp.create_dataset(
+                self.data_name,
+                shape=(0, *frame_shape),
+                maxshape=(None, *frame_shape),
+                chunks=(1, *frame_shape),
+                dtype=dtype,
+                **self._compress_kwargs,
+            )
             grp.attrs["encoding_type"] = "hadamard"
             grp.attrs["pattern_index"] = pattern_idx
-            grp.attrs["n_patterns"] = n_patterns
-            if S_matrix is not None:
-                grp.attrs["s_matrix_row"] = S_matrix[pattern_idx]
+            grp.attrs["n_patterns"] = self.n_patterns
+            grp.attrs["s_matrix_row"] = self.S_matrix[pattern_idx]
+            handles.append(fh)
+        return handles
 
-    print(f"Saved {n_patterns} encoding patterns to {base_path}_*.h5")
+    def close(self) -> None:
+        """Close all open HDF5 file handles."""
+        for handles in self._open_files.values():
+            for fh in handles:
+                fh.close()
+        self._open_files.clear()
+
+    def written_stems(self) -> List[str]:
+        """Return the list of dominant stems that were written."""
+        return list(self._open_files.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -293,104 +347,82 @@ def single_file_hadamard_encode(
     n_merged_frames: int,
     data_location: str,
     data_name: str,
-    output_file: str,
+    output_dir: str,
     start_index: int = 0,
 ) -> None:
     """Hadamard-encode frames from multiple files, processing each file independently.
 
     Each file is processed separately, and blocks do NOT span file boundaries.
     Within each file, blocks of *n_merged_frames* frames are consumed and
-    encoded with the S-matrix.
-
-    Memory is bounded: at most one block of *n_merged_frames* frames is held
-    in RAM at any time, and at most one HDF5 file is open at once.
-
-    One output HDF5 file is written per encoding pattern, named with the
-    binary S-matrix row (e.g. ``merged_110.h5`` for n=3).  Any trailing
-    frames in each file that do not form a complete block are discarded with
-    a warning.
+    encoded with the S-matrix.  Output files are written incrementally and
+    named after the input file stem (e.g. ``input_000_110.h5``).
 
     :param file_paths: Ordered list of HDF5 files to process independently
     :param n_merged_frames: S-matrix order; must be prime and satisfy n % 4 == 3
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
-    :param output_file: Base path for output files (e.g. ``"merged.h5"``)
+    :param output_dir: Directory for output files
     :param start_index: Global frame index (0-based) at which to begin forming blocks in the first file
     :raises ValueError: If no complete blocks can be formed
     """
     _validate_hadamard(n_merged_frames)
     S = generate_s_matrix(n_merged_frames)
 
-    all_encoded_bunches: List[np.ndarray] = []
+    writer = _IncrementalWriter(output_dir, data_location, data_name, S)
     dtype = None
     frame_shape = None
     global_frame_idx = 0
+    n_bunches_total = 0
 
-    for file_idx, file_path in enumerate(file_paths):
-        fh, dset = _open_file(file_path, data_location, data_name)
-        try:
-            n_frames = len(dset)
+    try:
+        for file_idx, file_path in enumerate(file_paths):
+            fh, dset = _open_file(file_path, data_location, data_name)
+            try:
+                n_frames = len(dset)
+                file_stem = Path(file_path).stem
 
-            if dtype is None:
-                dtype = dset.dtype
-                if n_frames > 0:
-                    frame_shape = dset[0].shape
+                if dtype is None:
+                    dtype = dset.dtype
+                    if n_frames > 0:
+                        frame_shape = dset[0].shape
 
-            local_start = 0
-            if file_idx == 0 and start_index > 0:
-                local_start = start_index
+                local_start = 0
+                if file_idx == 0 and start_index > 0:
+                    local_start = start_index
 
-            if local_start >= n_frames:
+                if local_start >= n_frames:
+                    global_frame_idx += n_frames
+                    continue
+
+                block: List[np.ndarray] = []
+
+                for local_idx in range(local_start, n_frames):
+                    frame = dset[local_idx]
+                    if frame_shape is None:
+                        frame_shape = frame.shape
+
+                    block.append(frame)
+
+                    if len(block) == n_merged_frames:
+                        encoded = np.zeros((n_merged_frames, *frame_shape), dtype=dtype)
+                        for pattern_idx in range(n_merged_frames):
+                            for frame_idx in range(n_merged_frames):
+                                if S[pattern_idx, frame_idx] == 1:
+                                    encoded[pattern_idx] += block[frame_idx]
+
+                        writer.append_bunch(encoded, dtype, file_stem)
+                        n_bunches_total += 1
+                        block = []
+
                 global_frame_idx += n_frames
-                continue
 
-            block: List[np.ndarray] = []
-            frames_in_file = 0
+            finally:
+                fh.close()
 
-            for local_idx in range(local_start, n_frames):
-                frame = dset[local_idx]
-                if frame_shape is None:
-                    frame_shape = frame.shape
-
-                block.append(frame)
-                frames_in_file += 1
-
-                if len(block) == n_merged_frames:
-                    encoded = np.zeros((n_merged_frames, *frame_shape), dtype=dtype)
-                    for pattern_idx in range(n_merged_frames):
-                        for frame_idx in range(n_merged_frames):
-                            if S[pattern_idx, frame_idx] == 1:
-                                encoded[pattern_idx] += block[frame_idx]
-
-                    all_encoded_bunches.append(encoded)
-                    block = []
-
-            if block:
-                print(
-                    f"  File {file_path}: discarding incomplete trailing block "
-                    f"of {len(block)} frame(s)."
-                )
-
-            global_frame_idx += n_frames
-
-        finally:
-            fh.close()
-
-    if not all_encoded_bunches:
-        raise ValueError("No complete blocks found; check start_index and file contents.")
-
-    # Stack to (n_merged_frames, n_bunches, H, W).
-    stacked = np.stack(all_encoded_bunches, axis=0)  # (n_bunches, n, H, W)
-    encoded_data = np.transpose(stacked, (1, 0, 2, 3))  # (n, n_bunches, H, W)
-
-    _write_output(
-        output_file=output_file,
-        data_location=data_location,
-        data_name=data_name,
-        encoded_data=encoded_data,
-        dtype=dtype,
-        S_matrix=S,
-    )
+        if n_bunches_total == 0:
+            raise ValueError("No complete blocks found; check start_index and file contents.")
+    finally:
+        writer.close()
 
 
 def continuous_hadamard_encode(
@@ -398,76 +430,63 @@ def continuous_hadamard_encode(
     n_merged_frames: int,
     data_location: str,
     data_name: str,
-    output_file: str,
+    output_dir: str,
     start_index: int = 0,
 ) -> None:
     """Hadamard-encode frames streamed continuously across multiple HDF5 files.
 
     Blocks of *n_merged_frames* frames are consumed from the ordered sequence
     of *file_paths* and encoded with the S-matrix.  Blocks may span file
-    boundaries: when the window extends past the end of one file the remaining
-    frames are drawn from the next.
-
-    Memory is bounded: at most one block of *n_merged_frames* frames is held
-    in RAM at any time, and at most one HDF5 file is open at once.
-
-    One output HDF5 file is written per encoding pattern, named with the
-    binary S-matrix row (e.g. ``merged_110.h5`` for n=3).  Any trailing
-    frames that do not form a complete block are discarded with a warning.
+    boundaries.  Output files are written incrementally and named after the
+    dominant input file (the file contributing the most frames to each block),
+    e.g. ``input_001_110.h5``.
 
     :param file_paths: Ordered list of HDF5 files to stream through
     :param n_merged_frames: S-matrix order; must be prime and satisfy n % 4 == 3
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
-    :param output_file: Base path for output files (e.g. ``"merged.h5"``)
+    :param output_dir: Directory for output files
     :param start_index: Global frame index (0-based, counting from the first frame of *file_paths[0]*) at which to begin forming blocks
     :raises ValueError: If *start_index* is beyond all available frames, or if no complete blocks can be formed
     """
     _validate_hadamard(n_merged_frames)
     S = generate_s_matrix(n_merged_frames)
 
+    # Peek at first frame to get dtype/shape.
     peek = _frame_iterator(file_paths, data_location, data_name, start_index)
     try:
-        first_frame, dtype = next(peek)
+        first_frame, dtype, _ = next(peek)
     except StopIteration:
         raise ValueError("No frames available at or after start_index.")
     frame_shape = first_frame.shape
     del first_frame
 
-    encoded_bunches: List[np.ndarray] = []
+    writer = _IncrementalWriter(output_dir, data_location, data_name, S)
     block: List[np.ndarray] = []
-    bunch_idx = 0
+    block_file_counts: Counter = Counter()
+    n_bunches_total = 0
 
-    for frame, _ in _frame_iterator(file_paths, data_location, data_name, start_index):
-        block.append(frame)
+    try:
+        for frame, _, file_path in _frame_iterator(
+            file_paths, data_location, data_name, start_index
+        ):
+            block.append(frame)
+            block_file_counts[file_path] += 1
 
-        if len(block) == n_merged_frames:
-            encoded = np.zeros((n_merged_frames, *frame_shape), dtype=dtype)
-            for pattern_idx in range(n_merged_frames):
-                for frame_idx in range(n_merged_frames):
-                    if S[pattern_idx, frame_idx] == 1:
-                        encoded[pattern_idx] += block[frame_idx]
+            if len(block) == n_merged_frames:
+                encoded = np.zeros((n_merged_frames, *frame_shape), dtype=dtype)
+                for pattern_idx in range(n_merged_frames):
+                    for frame_idx in range(n_merged_frames):
+                        if S[pattern_idx, frame_idx] == 1:
+                            encoded[pattern_idx] += block[frame_idx]
 
-            encoded_bunches.append(encoded)
-            # TODO
-            bunch_idx += 1
-            block = []
+                stem = _dominant_stem(block_file_counts)
+                writer.append_bunch(encoded, dtype, stem)
+                n_bunches_total += 1
+                block = []
+                block_file_counts = Counter()
 
-    if block:
-        print(f"  Warning: discarding incomplete trailing block of {len(block)} frame(s).")
-
-    if not encoded_bunches:
-        raise ValueError("No complete blocks found; check start_index and file contents.")
-
-    # Stack to (n_merged_frames, n_bunches, H, W).
-    stacked = np.stack(encoded_bunches, axis=0)  # (n_bunches, n, H, W)
-    encoded_data = np.transpose(stacked, (1, 0, 2, 3))  # (n, n_bunches, H, W)
-
-    _write_output(
-        output_file=output_file,
-        data_location=data_location,
-        data_name=data_name,
-        encoded_data=encoded_data,
-        dtype=dtype,
-        S_matrix=S,
-    )
+        if n_bunches_total == 0:
+            raise ValueError("No complete blocks found; check start_index and file contents.")
+    finally:
+        writer.close()

@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import List
 
@@ -38,6 +37,19 @@ def _read_output(path: str) -> np.ndarray:
     """Read the merged dataset back from *path*."""
     with h5py.File(path, "r") as f:
         return f[f"{DATA_LOCATION}/{DATA_NAME}"][:]
+
+
+def _find_pattern_files(output_dir: str, dominant_stem: str, n: int) -> List[str]:
+    """Return the per-pattern output files in pattern order."""
+    from hatTrick._helpers import generate_s_matrix
+
+    S = generate_s_matrix(n)
+    out = Path(output_dir)
+    paths = []
+    for row in S:
+        tag = "".join(str(int(x)) for x in row)
+        paths.append(str(out / f"{dominant_stem}_{tag}.h5"))
+    return paths
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +101,7 @@ class TestFrameIterator:
     def test_yields_all_frames_single_file(self, tmp_path):
         frames = np.arange(12, dtype=np.float32).reshape(3, 2, 2)
         paths = _make_files(tmp_path, [frames])
-        result = [f for f, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME)]
+        result = [f for f, _, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME)]
         assert len(result) == 3
         np.testing.assert_array_equal(result[0], frames[0])
 
@@ -97,7 +109,7 @@ class TestFrameIterator:
         f1 = np.zeros((3, 2, 2), dtype=np.float32)
         f2 = np.ones((3, 2, 2), dtype=np.float32)
         paths = _make_files(tmp_path, [f1, f2])
-        result = [f for f, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME)]
+        result = [f for f, _, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME)]
         assert len(result) == 6
         # First 3 frames are zeros, next 3 are ones.
         np.testing.assert_array_equal(result[2], np.zeros((2, 2)))
@@ -106,7 +118,7 @@ class TestFrameIterator:
     def test_start_index_skips_frames(self, tmp_path):
         frames = np.arange(12, dtype=np.float32).reshape(4, 3)
         paths = _make_files(tmp_path, [frames])
-        result = [f for f, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME, start_index=2)]
+        result = [f for f, _, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME, start_index=2)]
         assert len(result) == 2
         np.testing.assert_array_equal(result[0], frames[2])
 
@@ -115,9 +127,20 @@ class TestFrameIterator:
         f1 = np.zeros((4, *FRAME_SHAPE), dtype=np.float32)
         f2 = np.ones((4, *FRAME_SHAPE), dtype=np.float32)
         paths = _make_files(tmp_path, [f1, f2])
-        result = [f for f, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME, start_index=4)]
+        result = [f for f, _, _ in _frame_iterator(paths, DATA_LOCATION, DATA_NAME, start_index=4)]
         assert len(result) == 4
         np.testing.assert_array_equal(result[0], np.ones(FRAME_SHAPE))
+
+    def test_yields_file_path(self, tmp_path):
+        """_frame_iterator yields the source file path for each frame."""
+        f1 = np.zeros((2, *FRAME_SHAPE), dtype=np.float32)
+        f2 = np.ones((2, *FRAME_SHAPE), dtype=np.float32)
+        paths = _make_files(tmp_path, [f1, f2])
+        result = [(fp, f) for f, _, fp in _frame_iterator(paths, DATA_LOCATION, DATA_NAME)]
+        assert result[0][0] == paths[0]
+        assert result[1][0] == paths[0]
+        assert result[2][0] == paths[1]
+        assert result[3][0] == paths[1]
 
 
 # ---------------------------------------------------------------------------
@@ -137,24 +160,16 @@ class TestContinuousHadamardEncode:
             dtype=np.float32,
         )
         paths = _make_files(tmp_path, [frames])
-        out = str(tmp_path / "out.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=3,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
-        # With Hadamard encoding, we get n pattern files
-        # For n=3, pattern files will be created with binary tags
-        from hatTrick._helpers import generate_s_matrix
-
-        S = generate_s_matrix(3)
-        base = out.rsplit(".h5", 1)[0]
-        for pattern_idx, row in enumerate(S):
-            tag = "".join(str(int(x)) for x in row)
-            pattern_file = f"{base}_{tag}.h5"
-            result = _read_output(pattern_file)
+        for p in _find_pattern_files(out_dir, "run_000", 3):
+            result = _read_output(p)
             assert result.shape == (1, *FRAME_SHAPE)
 
     def test_block_spans_file_boundary(self, tmp_path):
@@ -168,22 +183,17 @@ class TestContinuousHadamardEncode:
             dtype=np.float32,
         )
         paths = _make_files(tmp_path, [f1, f2])
-        out = str(tmp_path / "out.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=3,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
-        from hatTrick._helpers import generate_s_matrix
-
-        S = generate_s_matrix(3)
-        base = out.rsplit(".h5", 1)[0]
-        for row in S:
-            tag = "".join(str(int(x)) for x in row)
-            pattern_file = f"{base}_{tag}.h5"
-            result = _read_output(pattern_file)
+        # Block of 3 from frames [1,2,3]: 2 from run_000, 1 from run_001 -> dominant is run_000
+        for p in _find_pattern_files(out_dir, "run_000", 3):
+            result = _read_output(p)
             assert result.shape == (1, *FRAME_SHAPE)
 
     def test_multiple_blocks_across_files(self, tmp_path):
@@ -191,74 +201,61 @@ class TestContinuousHadamardEncode:
         frame_data = [float(i) for i in range(6)]
         all_frames = np.array([np.full(FRAME_SHAPE, v) for v in frame_data], dtype=np.float32)
         paths = _make_files(tmp_path, [all_frames[0:2], all_frames[2:4], all_frames[4:6]])
-        out = str(tmp_path / "out.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=3,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
-        from hatTrick._helpers import generate_s_matrix
-
-        S = generate_s_matrix(3)
-        base = out.rsplit(".h5", 1)[0]
-        for row in S:
-            tag = "".join(str(int(x)) for x in row)
-            pattern_file = f"{base}_{tag}.h5"
-            result = _read_output(pattern_file)
-            assert result.shape == (2, *FRAME_SHAPE)
+        # Block 1: frames 0,1,2 -> run_000(2), run_001(1) -> dominant run_000
+        # Block 2: frames 3,4,5 -> run_001(1), run_002(2) -> dominant run_002
+        for p in _find_pattern_files(out_dir, "run_000", 3):
+            result = _read_output(p)
+            assert result.shape == (1, *FRAME_SHAPE)
+        for p in _find_pattern_files(out_dir, "run_002", 3):
+            result = _read_output(p)
+            assert result.shape == (1, *FRAME_SHAPE)
 
     def test_start_index(self, tmp_path):
         """Frames before start_index are skipped."""
         frames = np.array([np.full(FRAME_SHAPE, float(i)) for i in range(6)], dtype=np.float32)
         paths = _make_files(tmp_path, [frames])
-        out = str(tmp_path / "out.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=3,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
             start_index=3,
-            output_file=out,
+            output_dir=out_dir,
         )
-        from hatTrick._helpers import generate_s_matrix
-
-        S = generate_s_matrix(3)
-        base = out.rsplit(".h5", 1)[0]
-        for row in S:
-            tag = "".join(str(int(x)) for x in row)
-            pattern_file = f"{base}_{tag}.h5"
-            result = _read_output(pattern_file)
+        for p in _find_pattern_files(out_dir, "run_000", 3):
+            result = _read_output(p)
             assert result.shape == (1, *FRAME_SHAPE)
 
     def test_incomplete_trailing_block_discarded(self, tmp_path):
         """A trailing block with fewer than n_merged_frames frames is discarded."""
         frames = np.array([np.full(FRAME_SHAPE, float(i)) for i in range(5)], dtype=np.float32)
         paths = _make_files(tmp_path, [frames])
-        out = str(tmp_path / "out.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=3,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
-        from hatTrick._helpers import generate_s_matrix
-
-        S = generate_s_matrix(3)
-        base = out.rsplit(".h5", 1)[0]
-        for row in S:
-            tag = "".join(str(int(x)) for x in row)
-            pattern_file = f"{base}_{tag}.h5"
-            result = _read_output(pattern_file)
+        for p in _find_pattern_files(out_dir, "run_000", 3):
+            result = _read_output(p)
             assert result.shape == (1, *FRAME_SHAPE)
 
     def test_no_frames_after_start_raises(self, tmp_path):
         """start_index beyond all frames raises ValueError."""
         frames = np.zeros((3, *FRAME_SHAPE), dtype=np.float32)
         paths = _make_files(tmp_path, [frames])
-        out = str(tmp_path / "out.h5")
+        out_dir = str(tmp_path / "out")
         with pytest.raises(ValueError, match="No frames available"):
             continuous_hadamard_encode(
                 file_paths=paths,
@@ -266,7 +263,7 @@ class TestContinuousHadamardEncode:
                 data_location=DATA_LOCATION,
                 data_name=DATA_NAME,
                 start_index=99,
-                output_file=out,
+                output_dir=out_dir,
             )
 
     def test_start_index_spans_file_boundary(self, tmp_path):
@@ -274,42 +271,36 @@ class TestContinuousHadamardEncode:
         f1 = np.array([np.full(FRAME_SHAPE, float(i)) for i in range(4)], dtype=np.float32)
         f2 = np.array([np.full(FRAME_SHAPE, float(i + 4)) for i in range(4)], dtype=np.float32)
         paths = _make_files(tmp_path, [f1, f2])
-        out = str(tmp_path / "out.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=3,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
             start_index=5,
-            output_file=out,
+            output_dir=out_dir,
         )
-        from hatTrick._helpers import generate_s_matrix
-
-        S = generate_s_matrix(3)
-        base = out.rsplit(".h5", 1)[0]
-        for row in S:
-            tag = "".join(str(int(x)) for x in row)
-            pattern_file = f"{base}_{tag}.h5"
-            result = _read_output(pattern_file)
+        for p in _find_pattern_files(out_dir, "run_001", 3):
+            result = _read_output(p)
             assert result.shape == (1, *FRAME_SHAPE)
 
     def test_output_naming_convention(self, tmp_path):
-        """Output files are written with pattern-specific tags."""
+        """Output files are named with dominant stem and pattern-specific tags."""
         frames = np.zeros((3, *FRAME_SHAPE), dtype=np.float32)
         paths = _make_files(tmp_path, [frames])
-        out = str(tmp_path / "my_merged.h5")
+        out_dir = str(tmp_path / "out")
         continuous_hadamard_encode(
             file_paths=paths,
             n_merged_frames=3,
             data_location=DATA_LOCATION,
             data_name=DATA_NAME,
-            output_file=out,
+            output_dir=out_dir,
         )
         from hatTrick._helpers import generate_s_matrix
 
         S = generate_s_matrix(3)
-        base = out.rsplit(".h5", 1)[0]
+        out = Path(out_dir)
         for row in S:
             tag = "".join(str(int(x)) for x in row)
-            pattern_file = f"{base}_{tag}.h5"
-            assert os.path.isfile(pattern_file)
+            pattern_file = out / f"run_000_{tag}.h5"
+            assert pattern_file.is_file()
