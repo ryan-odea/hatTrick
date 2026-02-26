@@ -1,8 +1,8 @@
 import glob as _glob
 import os
-from collections import Counter
+from collections import Counter, OrderedDict
 from pathlib import Path
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Set, Tuple
 
 import h5py
 import numpy as np
@@ -254,6 +254,7 @@ class _IncrementalWriter:
         data_location: str,
         data_name: str,
         S_matrix: np.ndarray,
+        max_open_stems: int = 64,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -261,13 +262,16 @@ class _IncrementalWriter:
         self.data_name = data_name
         self.S_matrix = S_matrix
         self.n_patterns = S_matrix.shape[0]
+        self.max_open_stems = max_open_stems
 
         self._binary_tags = []
         for row in S_matrix:
             self._binary_tags.append("".join(str(int(x)) for x in row))
 
-        # Map: dominant_stem -> list of n open h5py.File handles
-        self._open_files: Dict[str, List[h5py.File]] = {}
+        # OrderedDict for LRU tracking: stem -> list of open h5py.File handles
+        self._open_files: OrderedDict[str, List[h5py.File]] = OrderedDict()
+        # Stems that have already been created on disk (reopen with "a")
+        self._created_stems: Set[str] = set()
         self._compress_kwargs = {}
         if HAS_BITSHUFFLE:
             self._compress_kwargs = dict(
@@ -288,9 +292,24 @@ class _IncrementalWriter:
         :param dominant_stem: Stem of the dominant input file for this bunch
         """
         if dominant_stem not in self._open_files:
-            self._open_files[dominant_stem] = self._open_pattern_files(
-                dominant_stem, encoded.shape[1:], dtype
-            )
+            # Evict least recently used stems if at capacity
+            while len(self._open_files) >= self.max_open_stems:
+                evict_stem, evict_handles = self._open_files.popitem(last=False)
+                for fh in evict_handles:
+                    fh.close()
+
+            if dominant_stem in self._created_stems:
+                self._open_files[dominant_stem] = self._reopen_pattern_files(
+                    dominant_stem
+                )
+            else:
+                self._open_files[dominant_stem] = self._open_pattern_files(
+                    dominant_stem, encoded.shape[1:], dtype
+                )
+                self._created_stems.add(dominant_stem)
+        else:
+            # Move to end (most recently used)
+            self._open_files.move_to_end(dominant_stem)
 
         handles = self._open_files[dominant_stem]
         for pattern_idx in range(self.n_patterns):
@@ -325,6 +344,16 @@ class _IncrementalWriter:
             handles.append(fh)
         return handles
 
+    def _reopen_pattern_files(self, dominant_stem: str) -> List[h5py.File]:
+        """Reopen previously created HDF5 files for a dominant stem."""
+        handles = []
+        for pattern_idx in range(self.n_patterns):
+            tag = self._binary_tags[pattern_idx]
+            path = self.output_dir / f"{dominant_stem}_{tag}.h5"
+            fh = h5py.File(str(path), "a")
+            handles.append(fh)
+        return handles
+
     def close(self) -> None:
         """Close all open HDF5 file handles."""
         for handles in self._open_files.values():
@@ -334,7 +363,7 @@ class _IncrementalWriter:
 
     def written_stems(self) -> List[str]:
         """Return the list of dominant stems that were written."""
-        return list(self._open_files.keys())
+        return list(self._created_stems)
 
 
 # ---------------------------------------------------------------------------
