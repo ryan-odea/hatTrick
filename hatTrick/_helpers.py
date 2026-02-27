@@ -317,7 +317,16 @@ class _IncrementalWriter:
             dset = fh[f"{self.data_location}/{self.data_name}"]
             cur_len = dset.shape[0]
             dset.resize(cur_len + 1, axis=0)
-            dset[cur_len] = encoded[pattern_idx]
+            try:
+                dset[cur_len] = encoded[pattern_idx]
+            except Exception as exc:
+                raise type(exc)(
+                    f"Failed writing pattern {pattern_idx} to "
+                    f"{fh.filename!r}: dset.shape={dset.shape}, "
+                    f"encoded[pattern_idx].shape={encoded[pattern_idx].shape}, "
+                    f"encoded.dtype={encoded.dtype}, "
+                    f"dset.dtype={dset.dtype}, cur_len={cur_len}"
+                ) from exc
 
     def _open_pattern_files(
         self, dominant_stem: str, frame_shape: tuple, dtype
