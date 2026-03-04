@@ -168,14 +168,15 @@ def _rolling_merge_sq(
 
 
 def _rolling_merge_mp(args: Tuple) -> Tuple[int, np.ndarray]:
-    start_idx, data_subset, n_merged_frames, dtype = args
+    start_idx, data_subset, n_merged_frames, skip_pattern, dtype = args
     frame_shape = data_subset.shape[1:]
     merged = np.zeros(frame_shape, dtype=dtype)
 
-    for i in range(n_merged_frames):
-        merged += data_subset[i]
+    skip_set = set(skip_pattern) if skip_pattern else set()
 
-    merged = merged / n_merged_frames
+    for i in range(n_merged_frames):
+        if i not in skip_set:
+            merged += data_subset[i]
 
     return start_idx, merged
 

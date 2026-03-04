@@ -102,8 +102,13 @@ class Merger:
             subset = self.data_array[start_idx : start_idx + self.n_merged_frames]
             chunks.append((start_idx, subset, self.S_matrix, self.dtype))
 
-        with Pool(self.n_workers) as pool:
+        pool = Pool(self.n_workers)
+        try:
             results = pool.map(_hadamard_encode_chunk_mp, chunks)
+        finally:
+            pool.close()
+            pool.join()
+            pool.terminate()
 
         results.sort(key=lambda x: x[0])
         encoded_arrays = [r[1] for r in results]
@@ -126,8 +131,13 @@ class Merger:
             subset = self.data_array[start_idx : start_idx + self.n_merged_frames]
             chunks.append((start_idx, subset, self.n_merged_frames, self.skip_pattern, self.dtype))
 
-        with Pool(self.n_workers) as pool:
+        pool = Pool(self.n_workers)
+        try:
             results = pool.map(_rolling_merge_mp, chunks)
+        finally:
+            pool.close()
+            pool.join()
+            pool.terminate()
 
         results.sort(key=lambda x: x[0])
         self.merged_data = np.array([r[1] for r in results])
