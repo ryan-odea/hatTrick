@@ -23,7 +23,13 @@ from .HATRX import decode_hadamard_files
     help="Output directory for decoded files",
 )
 @click.option("--prefix", type=str, default="decoded", help="Prefix for output filenames")
-def decode(n_frames, pattern, output_dir, prefix):
+@click.option(
+    "--continuous",
+    type=int,
+    default=None,
+    help="Offset used during continuous encoding."
+)
+def decode(n_frames, pattern, output_dir, prefix, continuous):
     """Decode Hadamard-encoded crystallographic files.
 
     Example usage:
@@ -35,6 +41,15 @@ def decode(n_frames, pattern, output_dir, prefix):
         -p "data/*merged-*.12.*.cif" \\
         -o decoded_output \\
         --prefix my_data
+
+    \b
+    For continuous encoding with offset 1:
+    hatrx decode -n 3 \\
+        -p "data/*merged-*.01.*.cif" \\
+        -p "data/*merged-*.02.*.cif" \\
+        -p "data/*merged-*.12.*.cif" \\
+        -o decoded_output \\
+        --continuous 1
     """
     if len(pattern) != n_frames:
         raise click.UsageError(
@@ -62,6 +77,7 @@ def decode(n_frames, pattern, output_dir, prefix):
             n_merged_frames=n_frames,
             output_dir=output_dir,
             output_prefix=prefix,
+            continuous_offset=continuous,
         )
     except Exception as e:
         raise click.ClickException(str(e))

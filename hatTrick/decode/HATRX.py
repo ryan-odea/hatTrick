@@ -15,6 +15,7 @@ def decode_hadamard_files(
     output_prefix: str = "decoded",
     S_matrix: Optional[np.ndarray] = None,
     file_format: str = "auto",
+    continuous_offset: Optional[int] = None,
 ) -> List[pd.DataFrame]:
 
     if len(encoded_files) != n_merged_frames:
@@ -189,7 +190,12 @@ def decode_hadamard_files(
 
         if output_dir:
             for frame_idx in range(n_merged_frames):
-                output_file = output_path / f"{output_prefix}_bunch{bunch_idx}_frame{frame_idx}.hkl"
+                if continuous_offset is not None:
+                    corrected_idx = (frame_idx - continuous_offset) % n_merged_frames
+                else:
+                    corrected_idx = frame_idx
+                global_frame = bunch_idx * n_merged_frames + corrected_idx
+                output_file = output_path / f"{output_prefix}_frame{global_frame}.hkl"
 
                 if file_format in ["crystfel", "crystfel_simple"]:
                     frame_cols = ["h", "k", "l", f"I_frame{frame_idx}", f"SIGMA_frame{frame_idx}"]
