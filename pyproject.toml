@@ -26,7 +26,8 @@ dependencies = [
     "scipy>=1.7.0",
     "click>=8.0.0",
     "h5py>=3.0.0",
-    "bitshuffle>=0.3.0"
+    "bitshuffle>=0.3.0",
+    "natsort>=8.0.0"
 ]
 
 [project.scripts]

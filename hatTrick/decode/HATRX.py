@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from scipy.linalg import block_diag
 
-from ._helpers import compute_hadamard_inverse, generate_s_matrix
+from .._helpers import compute_hadamard_inverse, generate_s_matrix
 
 
 def decode_hadamard_files(

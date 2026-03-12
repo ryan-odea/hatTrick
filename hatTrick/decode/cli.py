@@ -2,7 +2,7 @@ import glob
 
 import click
 
-from ._helpers import generate_s_matrix
+from .._helpers import generate_s_matrix
 from .HATRX import decode_hadamard_files
 
 
@@ -104,7 +104,7 @@ def show_encoding(n_frames):
         for i, row in enumerate(S):
             frames_summed = [j for j, val in enumerate(row) if val == 1]
             frames_str = "+".join(str(f) for f in frames_summed)
-            click.echo(f"  Pattern {i}: {row} → frames {frames_str} summed")
+            click.echo(f"  Pattern {i}: {row} -> frames {frames_str} summed")
         click.echo()
         click.echo("Example command:")
         click.echo(f"  hatrx decode -n {n_frames} \\")
