@@ -1,6 +1,7 @@
 import glob
 
 import click
+from natsort import natsorted
 
 from .._helpers import generate_s_matrix
 from .HATRX import decode_hadamard_files
@@ -58,7 +59,7 @@ def decode(n_frames, pattern, output_dir, prefix, continuous):
 
     encoded_files = []
     for i, pat in enumerate(pattern):
-        files = sorted(glob.glob(pat))
+        files = natsorted(glob.glob(pat))
         if not files:
             raise click.FileError(pat, f"No files found matching pattern {i}")
         encoded_files.append(files)
