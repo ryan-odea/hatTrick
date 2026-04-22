@@ -27,7 +27,8 @@ dependencies = [
     "click>=8.0.0",
     "h5py>=3.0.0",
     "bitshuffle>=0.3.0",
-    "natsort>=8.0.0"
+    "natsort>=8.0.0",
+    "polars>=1.0.0"
 ]
 
 [project.scripts]
@@ -36,6 +37,12 @@ hatrx = "hatTrick.cli:cli"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["hatTrick*"]
+
+[tool.ruff.lint]
+ignore = ["E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E731"]
 
 [tool.black]
 line-length = 100

@@ -2,7 +2,7 @@ import glob as _glob
 import os
 from collections import Counter, OrderedDict
 from pathlib import Path
-from typing import Dict, Iterator, List, Set, Tuple
+from typing import Iterator, List, Set, Tuple
 
 import h5py
 import numpy as np
@@ -338,7 +338,7 @@ class _IncrementalWriter:
             path = self.output_dir / f"{dominant_stem}_{tag}.h5"
             fh = h5py.File(str(path), "w")
             grp = fh.create_group(self.data_location)
-            dset = grp.create_dataset(
+            grp.create_dataset(
                 self.data_name,
                 shape=(0, *frame_shape),
                 maxshape=(None, *frame_shape),

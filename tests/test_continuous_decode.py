@@ -145,7 +145,7 @@ def test_continuous_offset1_frame_ordering(s_matrix, frame_values, tmp_path):
     assert len(trimmed_files[0]) == 1
 
     output_dir = tmp_path / "decoded_continuous"
-    results = decode_hadamard_files(
+    decode_hadamard_files(
         encoded_files=trimmed_files,
         n_merged_frames=n,
         output_dir=str(output_dir),
@@ -201,7 +201,7 @@ def test_continuous_multiple_bunches(s_matrix, frame_values, tmp_path):
     assert len(trimmed[0]) == 2  # bunches 1 and 2
 
     output_dir = tmp_path / "decoded"
-    results = decode_hadamard_files(
+    decode_hadamard_files(
         encoded_files=trimmed,
         n_merged_frames=n,
         output_dir=str(output_dir),
@@ -272,7 +272,7 @@ def test_continuous_vs_standard_same_data_different_order(s_matrix, tmp_path):
     std_files = _create_encoded_files_standard(std_dir, s_matrix, fvals, n)
 
     std_out = tmp_path / "std_out"
-    std_results = decode_hadamard_files(
+    decode_hadamard_files(
         encoded_files=std_files,
         n_merged_frames=n,
         output_dir=str(std_out),
@@ -286,7 +286,7 @@ def test_continuous_vs_standard_same_data_different_order(s_matrix, tmp_path):
     cont_files = _create_encoded_files_continuous(cont_dir, s_matrix, fvals, n, offset=1)
 
     cont_out = tmp_path / "cont_out"
-    cont_results = decode_hadamard_files(
+    decode_hadamard_files(
         encoded_files=cont_files,
         n_merged_frames=n,
         output_dir=str(cont_out),
