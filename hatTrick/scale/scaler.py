@@ -155,6 +155,7 @@ def compute_resolution(
     k = np.asarray(k, dtype=np.float64)
     l = np.asarray(l, dtype=np.float64)
 
+    # replace with torchref calculation?
     inv_d_sq = (1.0 / V2) * (
         h**2 * b**2 * c**2 * sa**2
         + k**2 * a**2 * c**2 * sb**2
@@ -283,7 +284,7 @@ def scale_hkl_files(
     -------
     List of scaled DataFrames
     """
-    dark_df, dark_header, _ = read_crystfel_hkl(dark_path)
+    dark_df, _, _ = read_crystfel_hkl(dark_path)
 
     # Compute resolution for dark
     inv_d_sq_dark = compute_resolution(
@@ -297,7 +298,7 @@ def scale_hkl_files(
 
     results = []
 
-    for i, dec_path in enumerate(decoded_paths):
+    for _, dec_path in enumerate(decoded_paths):
         dec_df, dec_header, _ = read_crystfel_hkl(dec_path)
 
         # Inner join on h, k, l
