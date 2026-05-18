@@ -50,6 +50,17 @@ from .merger import Merger
         "independently."
     ),
 )
+@click.option(
+    "--skip-every",
+    "skip_every",
+    type=int,
+    default=None,
+    help=(
+        "Drop every N-th frame within each file. "
+        "E.g. --skip-every 40 keeps frames [0..38], [40..78], … "
+        "discarding the frame at each multiple of N (positions 39, 79, …)."
+    ),
+)
 def encode(
     file_name: str,
     output_dir: str,
@@ -58,6 +69,7 @@ def encode(
     data_name: str,
     start_index: int,
     continuous: bool,
+    skip_every: int,
 ) -> None:
     """Hadamard-encode HDF5 frames across one or more input files.
 
@@ -73,6 +85,7 @@ def encode(
     :param data_name: Dataset name within the HDF5 group
     :param start_index: Global frame index (0-based) at which to begin forming blocks
     :param continuous: If True, blocks may span file boundaries; if False, each file is processed independently
+    :param skip_every: Drop every N-th frame within each file before encoding
 
     \b
     Examples
@@ -91,6 +104,11 @@ def encode(
 
     \b
         hatrx encode -f files.txt -o merged/ --n-merged-frames 3 --start 100
+
+    Skip every 40th frame (keep [0..38], [40..78], …):
+
+    \b
+        hatrx encode -f run.h5 -o encoded/ --skip-every 40
     """
     merger = Merger(
         file_name=file_name,
@@ -100,5 +118,6 @@ def encode(
         data_name=data_name,
         start=start_index,
         continuous=continuous,
+        skip_every=skip_every,
     )
     merger.process()

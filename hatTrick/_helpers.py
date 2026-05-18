@@ -2,7 +2,7 @@ import glob as _glob
 import os
 from collections import Counter, OrderedDict
 from pathlib import Path
-from typing import Iterator, List, Set, Tuple
+from typing import Iterator, List, Optional, Set, Tuple
 
 import h5py
 import numpy as np
@@ -192,6 +192,7 @@ def _frame_iterator(
     data_location: str,
     data_name: str,
     start_index: int = 0,
+    skip_every: Optional[int] = None,
 ) -> Iterator[Tuple[np.ndarray, "np.dtype", str]]:
     """Yield individual frames across an ordered sequence of HDF5 files.
 
@@ -202,7 +203,8 @@ def _frame_iterator(
     :param file_paths: Ordered list of HDF5 file paths to stream through
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
-    :param start_index: Global frame index at which to begin yielding (0-based, counting from the very first frame of *file_paths[0]*)
+    :param start_index: Global frame index at which to begin yielding (0-based, counting non-skipped frames from the very first frame of *file_paths[0]*)
+    :param skip_every: If set, drop every *skip_every*-th frame within each file (i.e. frames at local positions ``skip_every-1``, ``2*skip_every-1``, … are discarded)
     :yields: Tuple of ``(frame_array, dtype, file_path)`` for each frame at or after *start_index*
     """
     global_idx = 0
@@ -211,6 +213,8 @@ def _frame_iterator(
         try:
             n = len(dset)
             for local_idx in range(n):
+                if skip_every and (local_idx + 1) % skip_every == 0:
+                    continue
                 if global_idx >= start_index:
                     yield dset[local_idx], dset.dtype, file_path
                 global_idx += 1
@@ -387,6 +391,7 @@ def single_file_hadamard_encode(
     data_name: str,
     output_dir: str,
     start_index: int = 0,
+    skip_every: Optional[int] = None,
 ) -> None:
     """Hadamard-encode frames from multiple files, processing each file independently.
 
@@ -400,7 +405,8 @@ def single_file_hadamard_encode(
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
     :param output_dir: Directory for output files
-    :param start_index: Global frame index (0-based) at which to begin forming blocks in the first file
+    :param start_index: Local frame index (0-based, raw) at which to begin forming blocks in the first file
+    :param skip_every: If set, drop every *skip_every*-th frame within each file (i.e. frames at local positions ``skip_every-1``, ``2*skip_every-1``, … are discarded)
     :raises ValueError: If no complete blocks can be formed
     """
     _validate_hadamard(n_merged_frames)
@@ -435,6 +441,8 @@ def single_file_hadamard_encode(
                 block: List[np.ndarray] = []
 
                 for local_idx in range(local_start, n_frames):
+                    if skip_every and (local_idx + 1) % skip_every == 0:
+                        continue
                     frame = dset[local_idx]
                     if frame_shape is None:
                         frame_shape = frame.shape
@@ -470,6 +478,7 @@ def continuous_hadamard_encode(
     data_name: str,
     output_dir: str,
     start_index: int = 0,
+    skip_every: Optional[int] = None,
 ) -> None:
     """Hadamard-encode frames streamed continuously across multiple HDF5 files.
 
@@ -484,14 +493,15 @@ def continuous_hadamard_encode(
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
     :param output_dir: Directory for output files
-    :param start_index: Global frame index (0-based, counting from the first frame of *file_paths[0]*) at which to begin forming blocks
+    :param start_index: Global frame index (0-based, counting non-skipped frames from the first frame of *file_paths[0]*) at which to begin forming blocks
+    :param skip_every: If set, drop every *skip_every*-th frame within each file (i.e. frames at local positions ``skip_every-1``, ``2*skip_every-1``, … are discarded)
     :raises ValueError: If *start_index* is beyond all available frames, or if no complete blocks can be formed
     """
     _validate_hadamard(n_merged_frames)
     S = generate_s_matrix(n_merged_frames)
 
     # Peek at first frame to get dtype/shape.
-    peek = _frame_iterator(file_paths, data_location, data_name, start_index)
+    peek = _frame_iterator(file_paths, data_location, data_name, start_index, skip_every)
     try:
         first_frame, dtype, _ = next(peek)
     except StopIteration:
@@ -506,7 +516,7 @@ def continuous_hadamard_encode(
 
     try:
         for frame, _, file_path in _frame_iterator(
-            file_paths, data_location, data_name, start_index
+            file_paths, data_location, data_name, start_index, skip_every
         ):
             block.append(frame)
             block_file_counts[file_path] += 1

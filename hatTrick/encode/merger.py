@@ -1,3 +1,5 @@
+from typing import Optional
+
 from .._helpers import (
     _validate_hadamard,
     continuous_hadamard_encode,
@@ -25,8 +27,9 @@ class Merger:
     :param n_merged_frames: S-matrix order; must be a prime satisfying n % 4 == 3
     :param data_location: HDF5 group path (e.g. ``"entry/data"``)
     :param data_name: Dataset name inside *data_location*
-    :param start: Global frame index (0-based, counting from the first frame of the first resolved file) at which to begin forming blocks
+    :param start: Global frame index (0-based, counting non-skipped frames from the first frame of the first resolved file) at which to begin forming blocks
     :param continuous: If True, blocks may span file boundaries; if False, each file is processed independently
+    :param skip_every: If set, drop every *skip_every*-th frame within each file (e.g. ``40`` drops frames 39, 79, 119, …)
     """
 
     def __init__(
@@ -38,6 +41,7 @@ class Merger:
         data_name: str = "data",
         start: int = 0,
         continuous: bool = False,
+        skip_every: Optional[int] = None,
     ):
         self.file_name = file_name
         self.output_dir = output_dir
@@ -46,6 +50,7 @@ class Merger:
         self.data_name = data_name
         self.start = start
         self.continuous = continuous
+        self.skip_every = skip_every
 
     def process(self) -> None:
         """Resolve input files and run the Hadamard encode."""
@@ -61,6 +66,7 @@ class Merger:
                 data_name=self.data_name,
                 output_dir=self.output_dir,
                 start_index=self.start,
+                skip_every=self.skip_every,
             )
         else:
             single_file_hadamard_encode(
@@ -70,4 +76,5 @@ class Merger:
                 data_name=self.data_name,
                 output_dir=self.output_dir,
                 start_index=self.start,
+                skip_every=self.skip_every,
             )
