@@ -98,3 +98,36 @@ Now that we have our encoded data in hkl format, with ambiguities resolved and a
 ```shell
 hatrx decode -n 3 -p "data_110-*.hkl" -p "data_101-*.hkl" -p "data_011-*.hkl" -o .
 ```
+### (3b) Decoding on the stream (recommended)
+
+Scaling is not linear in the encoded intensities: partialator fits a scale, B factor and partiality per encoded chunk, so decoding after scaling mixes those factors into the result and can absorb real frame-to-frame changes. Decoding the stream instead inverts the raw integrated intensities, after which partialator scales ordinary single-frame chunks.
+
+```shell
+# Index and resolve ambiguities as above, then decode the ambigator output
+hatrx decode-stream -n 3 -i {AMBI.STREAM} -o decoded.stream --symmetry 6/m --min-common 10
+
+# One dataset per time point: block "<stem>_<bunch>", frame f  ->  t = n*bunch + f
+awk '/^Image filename:/{fn=$3} /^Event:/{ev=$2; sub("//","",ev); k=split(fn,a,"_"); print fn, "//" ev, 3*a[k]+ev}' decoded.stream > split_t.lst
+
+# Scale and merge the decoded frames as normal data
+partialator -o decoded -y 6/m -i decoded.stream --model=xsphere --iterations=1 --push-res=1.5 -j 32 --custom-split=split_t.lst
+```
+
+The n chunks of a block are indexed independently, and a lattice can be indexed in any setting equivalent under its Laue group. ambigator only resolves the merohedral ambiguity, so the same reflection can carry a different `h k l` in each chunk. Pass `--symmetry` (the merging Laue group; currently `6/m`) so each chunk is relabelled into the setting of the first pattern before the reflections are joined. Without it, on real data almost no reflections are common to all n chunks. Blocks where the operator choice is not decisive, or with fewer than `--min-common` common reflections, are skipped.
+
+The split line above assumes the default `{stem}_{tag}.h5` gating, where the event of an encoded file is the bunch index; replace `3` with your `n`.
+
+Chunks are gated into blocks of `n` encoded chunks, one per S-matrix row, and each block is inverted together. By default a block is read off the encoder's `{stem}_{tag}.h5` file names plus the event number. When files are named differently, pass a split file with one line per encoded chunk:
+
+```
+# image filename    event   block   pattern (row index or binary tag)
+run_0001_a.h5       5       blk5    110
+run_0001_b.h5       5       blk5    101
+run_0001_c.h5       5       blk5    011
+```
+
+```shell
+hatrx decode-stream -n 3 -i {AMBI.STREAM} -o decoded.stream --split gating.txt
+```
+
+Decoded chunks carry the block id as `Image filename` and the frame index as `Event`, so each frame is a distinct crystal for partialator. Blocks with an unindexed chunk, a missing pattern, more than one crystal in a chunk, an ambiguous setting or too few common reflections are skipped and counted separately. The input is read chunk by chunk and unindexed chunks are not kept, but the indexed chunks are held in memory until the end (about 130 GB for a 25 GB stream). Sigmas are propagated in quadrature in both decoders.

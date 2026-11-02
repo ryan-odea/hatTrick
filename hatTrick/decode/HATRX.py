@@ -3,9 +3,8 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-from scipy.linalg import block_diag
 
-from .._helpers import compute_hadamard_inverse, generate_s_matrix
+from .._helpers import compute_hadamard_inverse, generate_s_matrix, hadamard_decode
 
 
 def decode_hadamard_files(
@@ -17,7 +16,16 @@ def decode_hadamard_files(
     file_format: str = "auto",
     continuous_offset: Optional[int] = None,
 ) -> List[pd.DataFrame]:
+    """Decode scaled CrystFEL ``.hkl`` files, one list of files per encoding pattern.
 
+    :param encoded_files: ``n_merged_frames`` lists of paths, each sorted by bunch
+    :param n_merged_frames: S-matrix order
+    :param output_dir: Where to write ``{output_prefix}_frame{i}.hkl``; nothing is written when ``None``
+    :param S_matrix: Pre-computed S-matrix; generated when ``None``
+    :param file_format: ``"auto"``, ``"crystfel"`` (7 columns) or ``"crystfel_simple"`` (5 columns)
+    :param continuous_offset: Offset used during continuous encoding
+    :returns: One DataFrame per bunch with decoded ``I_frame{i}`` and ``SIGMA_frame{i}`` columns
+    """
     if len(encoded_files) != n_merged_frames:
         raise ValueError(f"Expected {n_merged_frames} file lists, got {len(encoded_files)}")
 
@@ -47,6 +55,7 @@ def decode_hadamard_files(
     print()
 
     skip_rows = 0
+    n_cols = 0
     if file_format == "auto":
         first_file = encoded_files[0][0]
         with open(first_file, "r") as f:
@@ -73,19 +82,10 @@ def decode_hadamard_files(
             print("Detected format: h k l I sigma(I)")
             print(f"Skipping {skip_rows} header lines")
         else:
-            file_format = "ccp4"
-            print(f"Detected CCP4-like format with {n_cols} columns")
-            print(f"Skipping {skip_rows} header lines")
+            raise ValueError(
+                f"Unsupported .hkl layout with {n_cols} columns; expected 5 (h k l I sigma) or 7 (CrystFEL)"
+            )
         print()
-
-    if file_format == "crystfel":
-        n_data_blocks = 2
-    elif file_format == "crystfel_simple":
-        n_data_blocks = 2
-    else:
-        n_data_blocks = 4
-
-    cooler_Sinv = block_diag(*([Sinv] * n_data_blocks))
 
     if output_dir:
         output_path = Path(output_dir)
@@ -123,18 +123,8 @@ def decode_hadamard_files(
                     f"nmeas_{pattern_idx}",
                 ]
                 df = df.drop([f"phase_{pattern_idx}", f"nmeas_{pattern_idx}"], axis=1)
-            elif file_format == "crystfel_simple":
-                df.columns = ["h", "k", "l", f"I_{pattern_idx}", f"SIGMA_{pattern_idx}"]
             else:
-                df.columns = [
-                    "h",
-                    "k",
-                    "l",
-                    f"I_{pattern_idx}",
-                    f"sigI_{pattern_idx}",
-                    f"F_{pattern_idx}",
-                    f"sigF_{pattern_idx}",
-                ]
+                df.columns = ["h", "k", "l", f"I_{pattern_idx}", f"SIGMA_{pattern_idx}"]
 
             dfs.append(df)
 
@@ -155,36 +145,16 @@ def decode_hadamard_files(
             print("  WARNING: No valid reflections after conversion!")
             continue
 
-        reordered_cols = ["h", "k", "l"]
-
-        if file_format in ["crystfel", "crystfel_simple"]:
-            for col_type in ["I", "SIGMA"]:
-                reordered_cols.extend([f"{col_type}_{i}" for i in range(n_merged_frames)])
-        else:
-            for col_type in ["I", "sigI", "F", "sigF"]:
-                reordered_cols.extend([f"{col_type}_{i}" for i in range(n_merged_frames)])
-
-        combined = combined[reordered_cols]
-
-        data_only = combined.drop(["h", "k", "l"], axis=1)
-        decoded_data = data_only.apply(
-            lambda vec: np.dot(cooler_Sinv, vec.values), axis=1, result_type="expand"
-        )
-
-        combined.iloc[:, 3:] = decoded_data.values
-
-        if file_format in ["crystfel", "crystfel_simple"]:
-            combined.columns = ["h", "k", "l"] + [
-                f"{col_type}_frame{i}"
-                for col_type in ["I", "SIGMA"]
-                for i in range(n_merged_frames)
-            ]
-        else:
-            combined.columns = ["h", "k", "l"] + [
-                f"{col_type}_frame{i}"
-                for col_type in ["I", "sigI", "F", "sigF"]
-                for i in range(n_merged_frames)
-            ]
+        n = n_merged_frames
+        I_cols = [f"I_{i}" for i in range(n)]
+        sig_cols = [f"SIGMA_{i}" for i in range(n)]
+        combined = combined[["h", "k", "l"] + I_cols + sig_cols]
+        I_dec, sig_dec = hadamard_decode(combined[I_cols].values, combined[sig_cols].values, Sinv)
+        combined.iloc[:, 3 : 3 + n] = I_dec
+        combined.iloc[:, 3 + n :] = sig_dec
+        combined.columns = ["h", "k", "l"] + [
+            f"{col_type}_frame{i}" for col_type in ["I", "SIGMA"] for i in range(n)
+        ]
 
         decoded_bunches.append(combined)
 
@@ -197,40 +167,13 @@ def decode_hadamard_files(
                 global_frame = bunch_idx * n_merged_frames + corrected_idx
                 output_file = output_path / f"{output_prefix}_frame{global_frame}.hkl"
 
-                if file_format in ["crystfel", "crystfel_simple"]:
-                    frame_cols = ["h", "k", "l", f"I_frame{frame_idx}", f"SIGMA_frame{frame_idx}"]
-                    fmt = "%4d %4d %4d %12.4f %12.4f"
-
-                    with open(output_file, "w") as f:
-                        f.write("CrystFEL reflection list version 2.0\n")
-                        f.write("Symmetry: 6/m\n")
-                        f.write("   h    k    l          I   sigma(I)\n")
-
-                    frame_data = combined[frame_cols]
-                    with open(output_file, "a") as f:
-                        np.savetxt(f, frame_data.values, fmt=fmt)
-                        f.write("End of reflections\n")
-
-                else:
-                    frame_cols = [
-                        "h",
-                        "k",
-                        "l",
-                        f"I_frame{frame_idx}",
-                        f"sigI_frame{frame_idx}",
-                        f"F_frame{frame_idx}",
-                        f"sigF_frame{frame_idx}",
-                    ]
-                    fmt = "%4d %4d %4d %12.4f %12.4f %12.4f %12.4f"
-
-                    frame_data = combined[frame_cols]
-                    np.savetxt(
-                        output_file,
-                        frame_data.values,
-                        fmt=fmt,
-                        header="h    k    l    I            sigI         F            sigF",
-                        comments="# ",
-                    )
+                frame_cols = ["h", "k", "l", f"I_frame{frame_idx}", f"SIGMA_frame{frame_idx}"]
+                with open(output_file, "w") as f:
+                    f.write("CrystFEL reflection list version 2.0\n")
+                    f.write("Symmetry: 6/m\n")
+                    f.write("   h    k    l          I   sigma(I)\n")
+                    np.savetxt(f, combined[frame_cols].values, fmt="%4d %4d %4d %12.4f %12.4f")
+                    f.write("End of reflections\n")
 
             print(f"  Saved decoded frames to {output_dir}")
 

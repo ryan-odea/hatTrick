@@ -4,6 +4,7 @@ import click
 
 from .._helpers import generate_s_matrix
 from .HATRX import decode_hadamard_files
+from .stream import decode_stream as _decode_stream
 
 
 @click.command()
@@ -36,18 +37,18 @@ def decode(n_frames, pattern, output_dir, prefix, continuous):
 
     \b
     hatrx decode -n 3 \\
-        -p "data/*merged-*.01.*.cif" \\
-        -p "data/*merged-*.02.*.cif" \\
-        -p "data/*merged-*.12.*.cif" \\
+        -p "data/*01-*.hkl" \\
+        -p "data/*02-*.hkl" \\
+        -p "data/*12-*.hkl" \\
         -o decoded_output \\
         --prefix my_data
 
     \b
     For continuous encoding with offset 1:
     hatrx decode -n 3 \\
-        -p "data/*merged-*.01.*.cif" \\
-        -p "data/*merged-*.02.*.cif" \\
-        -p "data/*merged-*.12.*.cif" \\
+        -p "data/*01-*.hkl" \\
+        -p "data/*02-*.hkl" \\
+        -p "data/*12-*.hkl" \\
         -o decoded_output \\
         --continuous 1
     """
@@ -111,7 +112,37 @@ def show_encoding(n_frames):
         for i, row in enumerate(S):
             frames_summed = [j for j, val in enumerate(row) if val == 1]
             pattern_name = "".join(str(f) for f in frames_summed)
-            click.echo(f'    -p "data/*merged-*.{pattern_name}.*.cif" \\')
+            click.echo(f'    -p "data/*{pattern_name}-*.hkl" \\')
         click.echo("    -o decoded_output")
+    except Exception as e:
+        raise click.ClickException(str(e))
+
+
+@click.command("decode-stream")
+@click.option("-n", "--n-frames", type=int, required=True, help="Number of merged frames (must be a prime number)")
+@click.option("-i", "--input", "stream", type=click.Path(exists=True), required=True, help="Encoded CrystFEL stream (after ambigator)")
+@click.option("-o", "--output", type=click.Path(), required=True, help="Decoded output stream")
+@click.option(
+    "--split",
+    type=click.Path(exists=True),
+    default=None,
+    help="Gating file with lines '<filename> <event> <block> <pattern>'. "
+    "Without it, blocks are inferred from the encoder's '{stem}_{tag}.h5' naming.",
+)
+@click.option("--continuous", type=int, default=None, help="Offset used during continuous encoding.")
+@click.option("--symmetry", type=str, default=None,
+              help="Laue group (e.g. 6/m) used to bring the n chunks of a block into one indexing setting before joining on hkl.")
+@click.option("--min-common", type=int, default=1, show_default=True,
+              help="Skip blocks with fewer common reflections than this.")
+def decode_stream(n_frames, stream, output, split, continuous, symmetry, min_common):
+    """Decode an encoded CrystFEL stream into per-frame chunks, before scaling.
+
+    \b
+    hatrx decode-stream -n 3 -i ambig.stream -o decoded.stream --split gating.txt
+    partialator -i decoded.stream -o decoded -y 6/m --model=xsphere
+    """
+    try:
+        _decode_stream(stream, output, n_frames, split_file=split, continuous_offset=continuous,
+                       symmetry=symmetry, min_common=min_common)
     except Exception as e:
         raise click.ClickException(str(e))

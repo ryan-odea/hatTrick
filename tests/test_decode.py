@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from hatTrick._helpers import generate_s_matrix
-from hatTrick.HATRX import _intensities_to_amplitudes, decode_hadamard_files
+from hatTrick import decode_hadamard_files
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,85 +85,6 @@ def _make_encoded_files(tmp_path: Path, n: int, n_bunches: int, seed: int = 0):
     return encoded_files, ground_truth_I, h, k, l, sigI_per_frame
 
 
-# ---------------------------------------------------------------------------
-# _intensities_to_amplitudes
-# ---------------------------------------------------------------------------
-
-
-class TestIntensitiesToAmplitudes:
-    def _make_df(self, I_vals, sigI_vals, pattern_idx=0):
-        import pandas as pd
-
-        n = len(I_vals)
-        return pd.DataFrame(
-            {
-                "h": list(range(n)),
-                "k": [0] * n,
-                "l": [0] * n,
-                f"I_{pattern_idx}": I_vals,
-                f"SIGMA_{pattern_idx}": sigI_vals,
-            }
-        )
-
-    def test_positive_intensities(self):
-        """F = sqrt(I) and sigF = sigI / (2*F) for positive I."""
-        I = np.array([100.0, 400.0, 900.0])
-        sigI = np.array([10.0, 20.0, 30.0])
-        df = self._make_df(I, sigI)
-        out = _intensities_to_amplitudes(df, 0, "crystfel_simple")
-
-        np.testing.assert_allclose(out["F_0"].values, np.sqrt(I))
-        F = np.sqrt(I)
-        np.testing.assert_allclose(out["sigF_0"].values, sigI / (2 * F))
-
-    def test_negative_intensity_uses_abs(self):
-        """Negative intensities use |I| inside sqrt (weak reflections)."""
-        I = np.array([-4.0])
-        sigI = np.array([2.0])
-        df = self._make_df(I, sigI)
-        out = _intensities_to_amplitudes(df, 0, "crystfel_simple")
-        np.testing.assert_allclose(out["F_0"].values, [2.0])
-
-    def test_near_zero_intensity_floor(self):
-        """F very close to zero does not cause division by zero."""
-        I = np.array([0.0])
-        sigI = np.array([1.0])
-        df = self._make_df(I, sigI)
-        out = _intensities_to_amplitudes(df, 0, "crystfel_simple")
-        assert np.isfinite(out["sigF_0"].values[0])
-
-    def test_does_not_mutate_input(self):
-        """Original DataFrame is not modified."""
-        I = np.array([100.0])
-        sigI = np.array([10.0])
-        df = self._make_df(I, sigI)
-        original_cols = list(df.columns)
-        _intensities_to_amplitudes(df, 0, "crystfel_simple")
-        assert list(df.columns) == original_cols
-
-    def test_crystfel_sigma_column_name(self):
-        """SIGMA_ column is used for crystfel format."""
-        import pandas as pd
-
-        df = pd.DataFrame(
-            {
-                "h": [1],
-                "k": [0],
-                "l": [0],
-                "I_0": [100.0],
-                "SIGMA_0": [10.0],
-            }
-        )
-        out = _intensities_to_amplitudes(df, 0, "crystfel")
-        assert "F_0" in out.columns
-        assert "sigF_0" in out.columns
-
-
-# ---------------------------------------------------------------------------
-# decode_hadamard_files -- round-trip intensity
-# ---------------------------------------------------------------------------
-
-
 class TestDecodeIntensityRoundTrip:
     def test_single_bunch_round_trip(self, tmp_path):
         """Decoded intensities recover ground-truth values for n=3, 1 bunch."""
@@ -222,7 +143,7 @@ class TestDecodeIntensityRoundTrip:
 
         for bunch_idx in range(2):
             for frame_idx in range(n):
-                expected = Path(out_dir) / f"test_bunch{bunch_idx}_frame{frame_idx}.hkl"
+                expected = Path(out_dir) / f"test_frame{bunch_idx * n + frame_idx}.hkl"
                 assert expected.is_file(), f"Missing: {expected}"
 
     def test_output_files_not_written_without_output_dir(self, tmp_path):
@@ -240,158 +161,6 @@ class TestDecodeIntensityRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# decode_hadamard_files -- amplitude decoding
-# ---------------------------------------------------------------------------
-
-
-class TestDecodeAmplitudes:
-    def test_amplitude_columns_present(self, tmp_path):
-        """F_frame* and sigF_frame* columns appear when decode_amplitudes=True."""
-        n = 3
-        encoded_files, _, _, _, _, _ = _make_encoded_files(tmp_path, n, n_bunches=1)
-
-        result = decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            file_format="crystfel_simple",
-            decode_amplitudes=True,
-        )
-
-        df = result[0]
-        for frame_idx in range(n):
-            assert f"F_frame{frame_idx}" in df.columns
-            assert f"sigF_frame{frame_idx}" in df.columns
-
-    def test_amplitude_columns_absent_without_flag(self, tmp_path):
-        """F_frame* columns are absent when decode_amplitudes=False."""
-        n = 3
-        encoded_files, _, _, _, _, _ = _make_encoded_files(tmp_path, n, n_bunches=1)
-
-        result = decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            file_format="crystfel_simple",
-            decode_amplitudes=False,
-        )
-
-        df = result[0]
-        assert not any("F_frame" in c for c in df.columns)
-
-    def test_amplitude_values_plausible(self, tmp_path):
-        """Decoded F values are sqrt of decoded I values (approximately)."""
-        n = 3
-        encoded_files, _, _, _, _, _ = _make_encoded_files(tmp_path, n, n_bunches=1)
-
-        result_I = decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            file_format="crystfel_simple",
-            decode_amplitudes=False,
-        )
-        result_F = decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            file_format="crystfel_simple",
-            decode_amplitudes=True,
-        )
-
-        df_I = result_I[0]
-        df_F = result_F[0]
-
-        # The Hadamard inversion of sqrt(|encoded_I|) is NOT the same as
-        # sqrt(decoded_I) in general -- this test just checks the values are
-        # finite, positive for strong reflections, and in a plausible range.
-        for frame_idx in range(n):
-            F_vals = df_F[f"F_frame{frame_idx}"].values
-            I_vals = df_I[f"I_frame{frame_idx}"].values
-            assert np.all(np.isfinite(F_vals))
-            assert np.all(np.isfinite(df_F[f"sigF_frame{frame_idx}"].values))
-            # For strong positive reflections F ~ sqrt(I).
-            strong = I_vals > 100
-            if strong.any():
-                np.testing.assert_allclose(F_vals[strong], np.sqrt(I_vals[strong]), rtol=0.5)
-
-    def test_amplitude_output_files_written(self, tmp_path):
-        """Separate _F.hkl files written for each frame when decode_amplitudes=True."""
-        n = 3
-        enc_dir = tmp_path / "enc"
-        enc_dir.mkdir()
-        encoded_files, _, _, _, _, _ = _make_encoded_files(enc_dir, n, n_bunches=1)
-        out_dir = str(tmp_path / "decoded")
-
-        decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            output_dir=out_dir,
-            output_prefix="test",
-            file_format="crystfel_simple",
-            decode_amplitudes=True,
-        )
-
-        for frame_idx in range(n):
-            f_file = Path(out_dir) / f"test_bunch0_frame{frame_idx}_F.hkl"
-            assert f_file.is_file(), f"Missing amplitude file: {f_file}"
-            i_file = Path(out_dir) / f"test_bunch0_frame{frame_idx}.hkl"
-            assert i_file.is_file(), f"Missing intensity file: {i_file}"
-
-    def test_amplitude_output_files_not_written_without_flag(self, tmp_path):
-        """No _F.hkl files written when decode_amplitudes=False."""
-        n = 3
-        enc_dir = tmp_path / "enc"
-        enc_dir.mkdir()
-        encoded_files, _, _, _, _, _ = _make_encoded_files(enc_dir, n, n_bunches=1)
-        out_dir = str(tmp_path / "decoded")
-
-        decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            output_dir=out_dir,
-            output_prefix="test",
-            file_format="crystfel_simple",
-            decode_amplitudes=False,
-        )
-
-        f_files = list(Path(out_dir).glob("*_F.hkl"))
-        assert len(f_files) == 0
-
-    def test_amplitude_decode_order_matters(self, tmp_path):
-        """Verify that converting before vs after inversion gives different results.
-
-        This is a physics sanity check: the Hadamard inversion is linear over
-        intensities, so sqrt(S^-1 @ I) != S^-1 @ sqrt(I) in general.
-        """
-        n = 3
-        encoded_files, gt_I, h, k, l, _ = _make_encoded_files(tmp_path, n, n_bunches=1)
-
-        # Decode amplitudes correctly (convert before inversion).
-        result = decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            file_format="crystfel_simple",
-            decode_amplitudes=True,
-        )
-        F_before = result[0]["F_frame0"].values
-
-        # Manually compute the wrong order: invert first, then sqrt.
-        result_I = decode_hadamard_files(
-            encoded_files=encoded_files,
-            n_merged_frames=n,
-            file_format="crystfel_simple",
-            decode_amplitudes=False,
-        )
-        F_after = np.sqrt(np.abs(result_I[0]["I_frame0"].values))
-
-        # They should differ for non-trivial cases.
-        assert not np.allclose(
-            F_before, F_after, rtol=1e-3
-        ), "Pre- and post-inversion amplitude conversions should not be equal"
-
-
-# ---------------------------------------------------------------------------
-# resolve_file_list intake via decode_hadamard_files
-# ---------------------------------------------------------------------------
-
-
 class TestResolveFileListInDecode:
     def test_mismatched_pattern_counts_raises(self, tmp_path):
         """Unequal file counts across patterns raise ValueError."""

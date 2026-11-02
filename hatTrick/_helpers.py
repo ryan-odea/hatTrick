@@ -2,7 +2,7 @@ import glob as _glob
 import os
 from collections import Counter, OrderedDict
 from pathlib import Path
-from typing import Dict, Iterator, List, Set, Tuple
+from typing import Iterator, List, Set, Tuple
 
 import h5py
 import numpy as np
@@ -18,17 +18,7 @@ except ImportError:
     H5FILTER = None
 
 
-# ---------------------------------------------------------------------------
-# Prime / S-matrix helpers
-# ---------------------------------------------------------------------------
-
-
 def isprime(n: int) -> bool:
-    """Return True if *n* is a prime number.
-
-    :param n: Integer to test for primality
-    :returns: True if n is prime, False otherwise
-    """
     if n < 2:
         return False
     for x in range(2, int(n**0.5) + 1):
@@ -38,12 +28,6 @@ def isprime(n: int) -> bool:
 
 
 def ishift(alist: list, n: int) -> list:
-    """Left-rotate *alist* by *n* positions in place and return it.
-
-    :param alist: List to rotate
-    :param n: Number of positions to rotate left
-    :returns: The rotated list (same object as input)
-    """
     for i in range(n):
         tmp = alist.pop(0)
         alist.append(tmp)
@@ -98,16 +82,22 @@ def compute_hadamard_inverse(S: np.ndarray) -> np.ndarray:
     return Sinv
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
+def hadamard_decode(values: np.ndarray, sigmas: np.ndarray, Sinv: np.ndarray):
+    """Apply the inverse S-matrix to encoded values; sigmas propagate in quadrature.
+
+    ``sigma_i = sqrt(sum_j Sinv[i, j]^2 * sigma_j^2)``
+
+    :param values: Encoded values of shape ``(m, n)``; column j is pattern j
+    :param sigmas: Encoded sigmas of the same shape
+    :param Sinv: Inverse S-matrix of shape ``(n, n)``
+    :returns: ``(decoded_values, decoded_sigmas)`` of shape ``(m, n)``
+    """
+    values = np.asarray(values, dtype=float)
+    sigmas = np.asarray(sigmas, dtype=float)
+    return values @ Sinv.T, np.sqrt(sigmas**2 @ (Sinv**2).T)
 
 
 def _validate_hadamard(n_merged_frames: int) -> None:
-    """Validate that *n_merged_frames* satisfies the Hadamard prime constraint.
-
-    :param n_merged_frames: Block size; must be a positive prime satisfying n % 4 == 3
-    """
     if n_merged_frames <= 0:
         raise ValueError("n_merged_frames must be a positive integer.")
     if not isprime(n_merged_frames):
@@ -116,29 +106,15 @@ def _validate_hadamard(n_merged_frames: int) -> None:
         raise ValueError(f"n_merged_frames={n_merged_frames} must satisfy n == 3 (mod 4)")
 
 
-# ---------------------------------------------------------------------------
-# File-list / glob helpers
-# ---------------------------------------------------------------------------
-
-
 def resolve_file_list(source: str) -> List[str]:
-    """Resolve a file-list path or glob pattern to an ordered list of paths.
+    """Resolve a glob pattern or plain-text list file to an ordered list of paths.
 
-    When the number of files is large, shell glob expansion can exceed
-    ``ARG_MAX`` and fail. This function performs expansion inside Python so
-    that no shell limit applies.
+    An existing file not ending in ``.h5``/``.hdf5`` is read as one path per
+    line (``#`` lines ignored); anything else is expanded as a glob.
 
-    The *source* argument is interpreted as follows:
-
-    * If it is an existing regular file whose extension is **not** ``.h5`` or
-      ``.hdf5``, it is treated as a **list file**: one HDF5 path per line,
-      with ``#``-prefixed lines and blank lines ignored.
-    * Otherwise it is treated as a **glob pattern** and expanded with
-      :func:`glob.glob`.
-
-    :param source: Either a glob pattern (e.g. ``"data/run_*.h5"``) or the path to a plain-text manifest file containing one HDF5 path per line
-    :returns: Sorted list of resolved file paths
-    :raises ValueError: If no files are found after resolution
+    :param source: Glob pattern or list-file path
+    :returns: Naturally sorted file paths
+    :raises ValueError: If nothing resolves
     """
     if os.path.isfile(source) and not source.endswith(".h5") and not source.endswith(".hdf5"):
         paths = []
@@ -158,23 +134,9 @@ def resolve_file_list(source: str) -> List[str]:
     return paths
 
 
-# ---------------------------------------------------------------------------
-# HDF5 helpers
-# ---------------------------------------------------------------------------
-
-
 def _open_file(
     file_name: str, data_location: str, data_name: str
 ) -> Tuple[h5py.File, h5py.Dataset]:
-    """Open an HDF5 file and return the file handle and dataset.
-
-    :param file_name: Path to the HDF5 file
-    :param data_location: HDF5 group path (e.g., "entry/data")
-    :param data_name: Dataset name inside the data_location group
-    :returns: Tuple of (h5py.File, h5py.Dataset) - caller is responsible for closing the file handle
-    :raises IOError: If the file cannot be opened
-    :raises KeyError: If the dataset is not found in the file
-    """
     try:
         data_file = h5py.File(file_name, "r")
     except Exception as e:
@@ -193,18 +155,6 @@ def _frame_iterator(
     data_name: str,
     start_index: int = 0,
 ) -> Iterator[Tuple[np.ndarray, "np.dtype", str]]:
-    """Yield individual frames across an ordered sequence of HDF5 files.
-
-    At most one HDF5 file is open at a time. Combined with the block-at-a-time
-    accumulation in :func:`continuous_hadamard_encode`, at most one block's
-    worth of frame data is in memory simultaneously.
-
-    :param file_paths: Ordered list of HDF5 file paths to stream through
-    :param data_location: HDF5 group path (e.g. ``"entry/data"``)
-    :param data_name: Dataset name inside *data_location*
-    :param start_index: Global frame index at which to begin yielding (0-based, counting from the very first frame of *file_paths[0]*)
-    :yields: Tuple of ``(frame_array, dtype, file_path)`` for each frame at or after *start_index*
-    """
     global_idx = 0
     for file_path in file_paths:
         fh, dset = _open_file(file_path, data_location, data_name)
@@ -218,35 +168,12 @@ def _frame_iterator(
             fh.close()
 
 
-# ---------------------------------------------------------------------------
-# Incremental HDF5 writer
-# ---------------------------------------------------------------------------
-
-
 def _dominant_stem(file_counts: Counter) -> str:
-    """Return the stem of the file that contributed the most frames to a block.
-
-    :param file_counts: Counter mapping file paths to frame counts
-    :returns: The stem (filename without extension) of the dominant file
-    """
     dominant_path = file_counts.most_common(1)[0][0]
     return Path(dominant_path).stem
 
 
 class _IncrementalWriter:
-    """Manages per-pattern HDF5 output files and appends bunches incrementally.
-
-    Output files are named ``{output_dir}/{dominant_stem}_{binary_tag}.h5``
-    where *binary_tag* is the S-matrix row for that pattern.  When the dominant
-    file changes, previously open files are closed and new ones are opened.
-    When the dominant file is the same as the previous bunch, data is appended
-    to the existing resizable datasets.
-
-    :param output_dir: Directory in which to write output files
-    :param data_location: HDF5 group path (e.g. ``"entry/data"``)
-    :param data_name: Dataset name inside *data_location*
-    :param S_matrix: The S-matrix used for encoding
-    """
 
     def __init__(
         self,
@@ -268,9 +195,9 @@ class _IncrementalWriter:
         for row in S_matrix:
             self._binary_tags.append("".join(str(int(x)) for x in row))
 
-        # OrderedDict for LRU tracking: stem -> list of open h5py.File handles
+        # LRU: stem -> open h5py.File handles
         self._open_files: OrderedDict[str, List[h5py.File]] = OrderedDict()
-        # Stems that have already been created on disk (reopen with "a")
+        # stems already on disk, reopened in append mode
         self._created_stems: Set[str] = set()
         self._compress_kwargs = {}
         if HAS_BITSHUFFLE:
@@ -285,14 +212,8 @@ class _IncrementalWriter:
         dtype,
         dominant_stem: str,
     ) -> None:
-        """Append one encoded bunch (n_patterns, H, W) to the output files.
-
-        :param encoded: Array of shape ``(n_patterns, H, W)``
-        :param dtype: HDF5 dataset dtype
-        :param dominant_stem: Stem of the dominant input file for this bunch
-        """
         if dominant_stem not in self._open_files:
-            # Evict least recently used stems if at capacity
+            # evict least recently used stems
             while len(self._open_files) >= self.max_open_stems:
                 evict_stem, evict_handles = self._open_files.popitem(last=False)
                 for fh in evict_handles:
@@ -308,7 +229,7 @@ class _IncrementalWriter:
                 )
                 self._created_stems.add(dominant_stem)
         else:
-            # Move to end (most recently used)
+            # mark most recently used
             self._open_files.move_to_end(dominant_stem)
 
         handles = self._open_files[dominant_stem]
@@ -331,14 +252,13 @@ class _IncrementalWriter:
     def _open_pattern_files(
         self, dominant_stem: str, frame_shape: tuple, dtype
     ) -> List[h5py.File]:
-        """Create and return n_patterns new HDF5 files for a dominant stem."""
         handles = []
         for pattern_idx in range(self.n_patterns):
             tag = self._binary_tags[pattern_idx]
             path = self.output_dir / f"{dominant_stem}_{tag}.h5"
             fh = h5py.File(str(path), "w")
             grp = fh.create_group(self.data_location)
-            dset = grp.create_dataset(
+            grp.create_dataset(
                 self.data_name,
                 shape=(0, *frame_shape),
                 maxshape=(None, *frame_shape),
@@ -354,7 +274,6 @@ class _IncrementalWriter:
         return handles
 
     def _reopen_pattern_files(self, dominant_stem: str) -> List[h5py.File]:
-        """Reopen previously created HDF5 files for a dominant stem."""
         handles = []
         for pattern_idx in range(self.n_patterns):
             tag = self._binary_tags[pattern_idx]
@@ -364,20 +283,13 @@ class _IncrementalWriter:
         return handles
 
     def close(self) -> None:
-        """Close all open HDF5 file handles."""
         for handles in self._open_files.values():
             for fh in handles:
                 fh.close()
         self._open_files.clear()
 
     def written_stems(self) -> List[str]:
-        """Return the list of dominant stems that were written."""
         return list(self._created_stems)
-
-
-# ---------------------------------------------------------------------------
-# Hadamard encode functions
-# ---------------------------------------------------------------------------
 
 
 def single_file_hadamard_encode(
@@ -388,21 +300,6 @@ def single_file_hadamard_encode(
     output_dir: str,
     start_index: int = 0,
 ) -> None:
-    """Hadamard-encode frames from multiple files, processing each file independently.
-
-    Each file is processed separately, and blocks do NOT span file boundaries.
-    Within each file, blocks of *n_merged_frames* frames are consumed and
-    encoded with the S-matrix.  Output files are written incrementally and
-    named after the input file stem (e.g. ``input_000_110.h5``).
-
-    :param file_paths: Ordered list of HDF5 files to process independently
-    :param n_merged_frames: S-matrix order; must be prime and satisfy n % 4 == 3
-    :param data_location: HDF5 group path (e.g. ``"entry/data"``)
-    :param data_name: Dataset name inside *data_location*
-    :param output_dir: Directory for output files
-    :param start_index: Global frame index (0-based) at which to begin forming blocks in the first file
-    :raises ValueError: If no complete blocks can be formed
-    """
     _validate_hadamard(n_merged_frames)
     S = generate_s_matrix(n_merged_frames)
 
@@ -471,26 +368,10 @@ def continuous_hadamard_encode(
     output_dir: str,
     start_index: int = 0,
 ) -> None:
-    """Hadamard-encode frames streamed continuously across multiple HDF5 files.
-
-    Blocks of *n_merged_frames* frames are consumed from the ordered sequence
-    of *file_paths* and encoded with the S-matrix.  Blocks may span file
-    boundaries.  Output files are written incrementally and named after the
-    dominant input file (the file contributing the most frames to each block),
-    e.g. ``input_001_110.h5``.
-
-    :param file_paths: Ordered list of HDF5 files to stream through
-    :param n_merged_frames: S-matrix order; must be prime and satisfy n % 4 == 3
-    :param data_location: HDF5 group path (e.g. ``"entry/data"``)
-    :param data_name: Dataset name inside *data_location*
-    :param output_dir: Directory for output files
-    :param start_index: Global frame index (0-based, counting from the first frame of *file_paths[0]*) at which to begin forming blocks
-    :raises ValueError: If *start_index* is beyond all available frames, or if no complete blocks can be formed
-    """
     _validate_hadamard(n_merged_frames)
     S = generate_s_matrix(n_merged_frames)
 
-    # Peek at first frame to get dtype/shape.
+    # peek first frame for dtype and shape
     peek = _frame_iterator(file_paths, data_location, data_name, start_index)
     try:
         first_frame, dtype, _ = next(peek)

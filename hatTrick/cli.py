@@ -1,6 +1,6 @@
 import click
 
-from .decode.cli import decode, show_encoding
+from .decode.cli import decode, decode_stream, show_encoding
 from .encode.cli import encode
 
 
@@ -13,6 +13,7 @@ def cli():
 
 cli.add_command(encode)
 cli.add_command(decode)
+cli.add_command(decode_stream)
 cli.add_command(show_encoding)
 
 
